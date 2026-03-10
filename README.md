@@ -35,6 +35,24 @@ This is the Rust implementation of [clipkeeper](https://github.com/mattpassman/c
 
 ## Installation
 
+### Windows
+
+1. Download `clipkeeper.exe` from the [latest release](https://github.com/mattpassman/clipkeeper-rust/releases/latest)
+2. Move it to a folder in your PATH, for example `C:\Users\<YourUser>\bin\`
+3. If the folder isn't already in your PATH, add it:
+
+**Add to PATH (PowerShell — run once):**
+```powershell
+$binDir = "$env:USERPROFILE\bin"
+New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+[Environment]::SetEnvironmentVariable("Path", "$([Environment]::GetEnvironmentVariable('Path', 'User'));$binDir", "User")
+```
+
+Restart your terminal, then verify:
+```powershell
+clipkeeper status
+```
+
 ### Quick Install (Linux/macOS)
 
 ```bash
