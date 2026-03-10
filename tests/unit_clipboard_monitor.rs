@@ -2,7 +2,8 @@
 /// 
 /// Tests cover:
 /// - Polling interval configuration
-/// - Change detection using SHA-256 hashing
+/// - Change detection using fast non-cryptographic hashing (ahash)
+/// - Length pre-check short-circuit optimization
 /// - Retry logic for clipboard access denied
 /// - Graceful shutdown via shutdown channel
 /// - Event emission through mpsc channel
@@ -95,15 +96,16 @@ fn test_polling_interval_respected() {
 
 #[test]
 fn test_change_detection_with_sha256() {
-    // Test that SHA-256 hashing correctly detects content changes
-    // This test verifies Requirement 1.2: detect changes using SHA-256 hashing
+    // Test that hashing correctly detects content changes
+    // This test verifies Requirement 1.2: detect changes using hashing
     
-    use sha2::{Sha256, Digest};
+    use std::hash::{BuildHasher, Hasher};
     
-    let calculate_hash = |content: &str| -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
-        hex::encode(hasher.finalize())
+    let calculate_hash = |content: &str| -> u64 {
+        let build_hasher = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let mut hasher = build_hasher.build_hasher();
+        hasher.write(content.as_bytes());
+        hasher.finish()
     };
     
     let content1 = "Hello, World!";
@@ -119,9 +121,6 @@ fn test_change_detection_with_sha256() {
     
     // Different content should produce different hash
     assert_ne!(hash1, hash3, "Different content should produce different hash");
-    
-    // Hash should be 64 characters (SHA-256 in hex = 32 bytes * 2)
-    assert_eq!(hash1.len(), 64, "SHA-256 hash should be 64 hex characters");
 }
 
 #[test]
@@ -132,20 +131,37 @@ fn test_change_detection_ignores_unchanged_content() {
     let (tx, rx) = mpsc::channel::<String>();
     let (_shutdown_tx, _shutdown_rx) = mpsc::channel::<()>();
     
+    use std::hash::{BuildHasher, Hasher};
+    
+    let calculate_hash = |content: &str| -> u64 {
+        let build_hasher = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let mut hasher = build_hasher.build_hasher();
+        hasher.write(content.as_bytes());
+        hasher.finish()
+    };
+    
     let mut mock_clipboard = MockClipboard::new("Same content");
-    let mut last_hash: Option<String> = None;
+    let mut last_state: Option<(usize, u64)> = None;
     
     // Simulate multiple polls with same content
     for _ in 0..5 {
         let content = mock_clipboard.get_text().unwrap();
+        let len = content.len();
         
-        use sha2::{Sha256, Digest};
-        let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
-        let hash = hex::encode(hasher.finalize());
+        let changed = match last_state {
+            Some((prev_len, prev_hash)) => {
+                if len != prev_len {
+                    true
+                } else {
+                    calculate_hash(&content) != prev_hash
+                }
+            }
+            None => true,
+        };
         
-        if last_hash.as_ref() != Some(&hash) {
-            last_hash = Some(hash);
+        if changed {
+            let hash = calculate_hash(&content);
+            last_state = Some((len, hash));
             let _ = tx.send(content);
         }
     }
@@ -163,18 +179,26 @@ fn test_change_detection_triggers_on_content_change() {
     let (tx, rx) = mpsc::channel::<String>();
     let (_shutdown_tx, _shutdown_rx) = mpsc::channel::<()>();
     
+    use std::hash::{BuildHasher, Hasher};
+    
+    let calculate_hash = |content: &str| -> u64 {
+        let build_hasher = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let mut hasher = build_hasher.build_hasher();
+        hasher.write(content.as_bytes());
+        hasher.finish()
+    };
+    
     let mut mock_clipboard = MockClipboard::new("Initial content");
-    let mut last_hash: Option<String> = None;
+    let mut last_state: Option<(usize, u64)> = None;
     
     // First poll - should trigger event
     let content1 = mock_clipboard.get_text().unwrap();
-    use sha2::{Sha256, Digest};
-    let mut hasher = Sha256::new();
-    hasher.update(content1.as_bytes());
-    let hash1 = hex::encode(hasher.finalize());
+    let len1 = content1.len();
+    let hash1 = calculate_hash(&content1);
     
-    if last_hash.as_ref() != Some(&hash1) {
-        last_hash = Some(hash1);
+    let changed = last_state.map_or(true, |(pl, ph)| pl != len1 || ph != hash1);
+    if changed {
+        last_state = Some((len1, hash1));
         let _ = tx.send(content1.clone());
     }
     
@@ -183,12 +207,11 @@ fn test_change_detection_triggers_on_content_change() {
     
     // Second poll - should trigger event
     let content2 = mock_clipboard.get_text().unwrap();
-    let mut hasher = Sha256::new();
-    hasher.update(content2.as_bytes());
-    let hash2 = hex::encode(hasher.finalize());
+    let len2 = content2.len();
+    let hash2 = calculate_hash(&content2);
     
-    if last_hash.as_ref() != Some(&hash2) {
-        last_hash = Some(hash2);
+    let changed = last_state.map_or(true, |(pl, ph)| pl != len2 || ph != hash2);
+    if changed {
         let _ = tx.send(content2.clone());
     }
     
@@ -484,21 +507,22 @@ fn test_logging_on_clipboard_change() {
 
 #[test]
 fn test_hash_determinism() {
-    // Test that SHA-256 hashing is deterministic
+    // Test that hashing is deterministic
     // This test verifies that same content always produces same hash
     
-    use sha2::{Sha256, Digest};
+    use std::hash::{BuildHasher, Hasher};
     
-    let calculate_hash = |content: &str| -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
-        hex::encode(hasher.finalize())
+    let calculate_hash = |content: &str| -> u64 {
+        let build_hasher = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let mut hasher = build_hasher.build_hasher();
+        hasher.write(content.as_bytes());
+        hasher.finish()
     };
     
     let content = "Deterministic test content";
     
     // Calculate hash multiple times
-    let hashes: Vec<String> = (0..10)
+    let hashes: Vec<u64> = (0..10)
         .map(|_| calculate_hash(content))
         .collect();
     
@@ -512,18 +536,16 @@ fn test_hash_determinism() {
 fn test_empty_content_handling() {
     // Test that empty clipboard content is handled correctly
     
-    use sha2::{Sha256, Digest};
+    use std::hash::{BuildHasher, Hasher};
     
-    let calculate_hash = |content: &str| -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
-        hex::encode(hasher.finalize())
+    let calculate_hash = |content: &str| -> u64 {
+        let build_hasher = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let mut hasher = build_hasher.build_hasher();
+        hasher.write(content.as_bytes());
+        hasher.finish()
     };
     
     let empty_hash = calculate_hash("");
-    
-    // Empty content should produce valid hash
-    assert_eq!(empty_hash.len(), 64);
     
     // Empty content hash should be consistent
     let empty_hash2 = calculate_hash("");
@@ -534,21 +556,19 @@ fn test_empty_content_handling() {
 fn test_large_content_handling() {
     // Test that large clipboard content is handled correctly
     
-    use sha2::{Sha256, Digest};
+    use std::hash::{BuildHasher, Hasher};
     
-    let calculate_hash = |content: &str| -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
-        hex::encode(hasher.finalize())
+    let calculate_hash = |content: &str| -> u64 {
+        let build_hasher = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let mut hasher = build_hasher.build_hasher();
+        hasher.write(content.as_bytes());
+        hasher.finish()
     };
     
     // Create large content (1MB)
     let large_content = "x".repeat(1024 * 1024);
     
     let hash = calculate_hash(&large_content);
-    
-    // Should produce valid hash
-    assert_eq!(hash.len(), 64);
     
     // Should be deterministic
     let hash2 = calculate_hash(&large_content);
@@ -559,20 +579,18 @@ fn test_large_content_handling() {
 fn test_special_characters_in_content() {
     // Test that special characters are handled correctly
     
-    use sha2::{Sha256, Digest};
+    use std::hash::{BuildHasher, Hasher};
     
-    let calculate_hash = |content: &str| -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
-        hex::encode(hasher.finalize())
+    let calculate_hash = |content: &str| -> u64 {
+        let build_hasher = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let mut hasher = build_hasher.build_hasher();
+        hasher.write(content.as_bytes());
+        hasher.finish()
     };
     
     let special_content = "Special chars: \n\t\r\0 émojis: 🎉🚀 unicode: 你好";
     
     let hash = calculate_hash(special_content);
-    
-    // Should produce valid hash
-    assert_eq!(hash.len(), 64);
     
     // Should be deterministic
     let hash2 = calculate_hash(special_content);

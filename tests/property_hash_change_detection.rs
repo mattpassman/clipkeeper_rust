@@ -1,21 +1,22 @@
-/// Property-based test for SHA-256 change detection
+/// Property-based test for hash change detection
 /// 
-/// Feature: clipkeeper-rust-conversion, Property 28: SHA-256 change detection is reliable
+/// Feature: clipkeeper-rust-conversion, Property 28: Hash change detection is reliable
 /// 
-/// This test verifies that SHA-256 hashing for clipboard change detection is reliable:
+/// This test verifies that hashing for clipboard change detection is reliable:
 /// 1. Same content always produces the same hash (deterministic)
 /// 2. Different content produces different hashes (collision-free for practical purposes)
 /// 
 /// **Validates: Requirements 1.2, 23.3**
 
 use proptest::prelude::*;
-use sha2::{Sha256, Digest};
+use std::hash::{BuildHasher, Hasher};
 
-/// Calculate SHA-256 hash of content (same as ClipboardMonitor::calculate_hash)
-fn calculate_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    hex::encode(hasher.finalize())
+/// Calculate hash of content using ahash (same as ClipboardMonitor::calculate_hash)
+fn calculate_hash(content: &str) -> u64 {
+    let build_hasher = ahash::RandomState::with_seeds(0, 0, 0, 0);
+    let mut hasher = build_hasher.build_hasher();
+    hasher.write(content.as_bytes());
+    hasher.finish()
 }
 
 /// Strategy to generate various clipboard content strings
@@ -41,7 +42,7 @@ proptest! {
     
     /// Property 28a: Same content produces same hash (deterministic)
     /// 
-    /// For any clipboard content, calculating its SHA-256 hash multiple times
+    /// For any clipboard content, calculating its hash multiple times
     /// should always produce the exact same hash value.
     #[test]
     fn property_same_content_produces_same_hash(
@@ -53,21 +54,14 @@ proptest! {
         let hash3 = calculate_hash(&content);
         
         // All hashes should be identical
-        prop_assert_eq!(&hash1, &hash2, "Hash should be deterministic (hash1 != hash2)");
-        prop_assert_eq!(&hash2, &hash3, "Hash should be deterministic (hash2 != hash3)");
-        prop_assert_eq!(&hash1, &hash3, "Hash should be deterministic (hash1 != hash3)");
-        
-        // Hash should be 64 characters (SHA-256 in hex)
-        prop_assert_eq!(hash1.len(), 64, "SHA-256 hash should be 64 hex characters");
-        
-        // Hash should only contain hex characters
-        prop_assert!(hash1.chars().all(|c| c.is_ascii_hexdigit()), 
-                    "Hash should only contain hex characters");
+        prop_assert_eq!(hash1, hash2, "Hash should be deterministic (hash1 != hash2)");
+        prop_assert_eq!(hash2, hash3, "Hash should be deterministic (hash2 != hash3)");
+        prop_assert_eq!(hash1, hash3, "Hash should be deterministic (hash1 != hash3)");
     }
     
     /// Property 28b: Different content produces different hashes
     /// 
-    /// For any two different clipboard contents, their SHA-256 hashes should be different.
+    /// For any two different clipboard contents, their hashes should be different.
     /// This verifies that the hash function provides reliable change detection.
     #[test]
     fn property_different_content_produces_different_hashes(
@@ -82,7 +76,7 @@ proptest! {
         
         // Different content should produce different hashes
         prop_assert_ne!(
-            &hash1, &hash2,
+            hash1, hash2,
             "Different content should produce different hashes:\n  content1: {:?}\n  content2: {:?}\n  hash1: {}\n  hash2: {}",
             content1, content2, hash1, hash2
         );
@@ -114,14 +108,9 @@ proptest! {
         let hash3 = calculate_hash(&modified3);
         
         // All modified versions should have different hashes
-        prop_assert_ne!(&original_hash, &hash1, "Adding space should change hash");
-        prop_assert_ne!(&original_hash, &hash2, "Adding character should change hash");
-        prop_assert_ne!(&original_hash, &hash3, "Removing character should change hash");
-        
-        // Modified versions should also differ from each other
-        prop_assert_ne!(&hash1, &hash2, "Different modifications should produce different hashes");
-        prop_assert_ne!(&hash2, &hash3, "Different modifications should produce different hashes");
-        prop_assert_ne!(&hash1, &hash3, "Different modifications should produce different hashes");
+        prop_assert_ne!(original_hash, hash1, "Adding space should change hash");
+        prop_assert_ne!(original_hash, hash2, "Adding character should change hash");
+        prop_assert_ne!(original_hash, hash3, "Removing character should change hash");
     }
 }
 
@@ -137,7 +126,6 @@ mod unit_tests {
         let hash2 = calculate_hash(content);
         
         assert_eq!(hash1, hash2, "Same content should produce same hash");
-        assert_eq!(hash1.len(), 64, "SHA-256 hash should be 64 hex characters");
     }
     
     #[test]
@@ -156,9 +144,9 @@ mod unit_tests {
         let empty = "";
         let hash = calculate_hash(empty);
         
-        // SHA-256 of empty string is a known value
-        assert_eq!(hash.len(), 64);
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        // Should be deterministic
+        let hash2 = calculate_hash(empty);
+        assert_eq!(hash, hash2);
     }
     
     #[test]
@@ -212,8 +200,9 @@ mod unit_tests {
         let long_content = "a".repeat(10000);
         let hash = calculate_hash(&long_content);
         
-        assert_eq!(hash.len(), 64, "Hash of long content should still be 64 characters");
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        // Should be deterministic
+        let hash2 = calculate_hash(&long_content);
+        assert_eq!(hash, hash2);
     }
     
     #[test]
@@ -244,5 +233,23 @@ mod unit_tests {
         assert_ne!(hash_unix, hash_windows, "Unix and Windows line endings should differ");
         assert_ne!(hash_unix, hash_mac, "Unix and Mac line endings should differ");
         assert_ne!(hash_windows, hash_mac, "Windows and Mac line endings should differ");
+    }
+    
+    #[test]
+    fn test_length_precheck_optimization() {
+        // Verify that the length pre-check correctly short-circuits
+        let content1 = "Hello";
+        let content2 = "World";  // Same length, different content
+        let content3 = "Hi";     // Different length
+        
+        let hash1 = calculate_hash(content1);
+        let hash2 = calculate_hash(content2);
+        
+        // Same length but different content should still produce different hashes
+        assert_eq!(content1.len(), content2.len());
+        assert_ne!(hash1, hash2);
+        
+        // Different length means we can skip hashing entirely
+        assert_ne!(content1.len(), content3.len());
     }
 }

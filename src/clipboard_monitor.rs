@@ -1,5 +1,5 @@
 use arboard::Clipboard;
-use sha2::{Sha256, Digest};
+use std::hash::{BuildHasher, Hasher};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -45,7 +45,7 @@ impl ClipboardMonitor {
     pub fn run(self) -> Result<()> {
         tracing::info!(component = "ClipboardMonitor", "Starting clipboard monitor");
         
-        let mut last_hash: Option<String> = None;
+        let mut last_state: Option<(usize, u64)> = None;
         
         loop {
             // Check for shutdown signal (non-blocking)
@@ -60,7 +60,7 @@ impl ClipboardMonitor {
             }
 
             // Check clipboard for changes
-            match self.check_clipboard(&mut last_hash) {
+            match self.check_clipboard(&mut last_state) {
                 Ok(Some(event)) => {
                     tracing::info!(
                         component = "ClipboardMonitor",
@@ -101,8 +101,9 @@ impl ClipboardMonitor {
 
     /// Check clipboard for changes
     /// 
-    /// Returns Some(ClipboardEvent) if content changed, None otherwise
-    fn check_clipboard(&self, last_hash: &mut Option<String>) -> Result<Option<ClipboardEvent>> {
+    /// Returns Some(ClipboardEvent) if content changed, None otherwise.
+    /// Short-circuits on content length before hashing for performance.
+    fn check_clipboard(&self, last_state: &mut Option<(usize, u64)>) -> Result<Option<ClipboardEvent>> {
         // Try to read clipboard with retry logic
         let content = match self.read_clipboard_with_retry() {
             Ok(content) => content,
@@ -117,12 +118,23 @@ impl ClipboardMonitor {
             }
         };
 
-        // Calculate hash for change detection
-        let hash = Self::calculate_hash(&content);
+        let len = content.len();
 
-        // Check if content changed
-        if last_hash.as_ref() != Some(&hash) {
-            *last_hash = Some(hash);
+        // Fast path: if length matches previous, compute hash to confirm
+        let changed = match *last_state {
+            Some((prev_len, prev_hash)) => {
+                if len != prev_len {
+                    true
+                } else {
+                    Self::calculate_hash(&content) != prev_hash
+                }
+            }
+            None => true,
+        };
+
+        if changed {
+            let hash = Self::calculate_hash(&content);
+            *last_state = Some((len, hash));
             
             let event = ClipboardEvent {
                 content,
@@ -171,11 +183,13 @@ impl ClipboardMonitor {
             })
     }
 
-    /// Calculate SHA-256 hash of content
-    fn calculate_hash(content: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
-        hex::encode(hasher.finalize())
+    /// Calculate fast non-cryptographic hash of content using ahash.
+    /// Used only for change detection, not security.
+    fn calculate_hash(content: &str) -> u64 {
+        let build_hasher = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let mut hasher = build_hasher.build_hasher();
+        hasher.write(content.as_bytes());
+        hasher.finish()
     }
 }
 
@@ -221,9 +235,6 @@ mod tests {
         
         // Different content should produce different hash
         assert_ne!(hash1, hash3);
-        
-        // Hash should be 64 characters (SHA-256 in hex)
-        assert_eq!(hash1.len(), 64);
     }
 
     #[test]
