@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a00fadb2e12b33625df14c422aa4c0a74a6df41b9fb3686abc5f87407b8d7878 # shrinks to pattern_type = "password", content_length = 8
+cc 5ea972aa5d23035222783ab218499d0707b9543d44df640bfce942ecf3f91083 # shrinks to component = "Application", message = " aAaa0AaA0", value = 0
+cc cfc944c2c6c508071bcba7a3208a4bb73c172fa1548040bf740e1d318fc5202b # shrinks to component = "Application", message = "0aAa0Aa0a ", error_code = 100
