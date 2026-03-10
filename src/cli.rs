@@ -176,16 +176,37 @@ pub fn handle_start(monitor: bool, service: bool) -> Result<()> {
 
     let service_manager = ServiceManager::new(&config).with_monitor(monitor);
 
-    if !monitor && service_manager.is_running()? {
+    if service_manager.is_running()? {
         let pid = service_manager.get_pid()?;
-        println!("{} Service is already running (PID: {})", CHECK, pid);
+        if monitor {
+            // Send SIGUSR1 to enable monitoring on the running service
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid;
+                kill(Pid::from_raw(pid as i32), Signal::SIGUSR1)
+                    .context("Failed to send monitor signal to service")?;
+                println!("{} Resource monitoring enabled on running service (PID: {})", CHECK, pid);
+                println!("View metrics with: clipkeeper metrics");
+            }
+            #[cfg(not(unix))]
+            {
+                println!("Enabling monitoring on a running service is not supported on this platform.");
+                println!("Please stop and restart with: clipkeeper start --monitor");
+            }
+        } else {
+            println!("{} Service is already running (PID: {})", CHECK, pid);
+        }
         return Ok(());
     }
 
+    println!("Starting clipkeeper service...");
     service_manager.start().context("Failed to start service")?;
-    if !monitor {
-        println!("{} Service started successfully", CHECK);
+    println!("{} Service started successfully", CHECK);
+    if monitor {
+        println!("Resource monitoring is enabled. View metrics with: clipkeeper metrics");
     }
+    println!("Use \"clipkeeper stop\" to stop the service.");
     Ok(())
 }
 

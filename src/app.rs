@@ -221,7 +221,8 @@ impl Application {
 
         // --- Main event loop: process clipboard events ---
         loop {
-            match event_rx.recv() {
+            // Use recv_timeout so we can periodically check for the SIGUSR1 monitor signal
+            match event_rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(event) => {
                     if let Err(e) = self.handle_clipboard_event(event) {
                         // Req 14.1, 14.2, 14.3, 40.8: Log error and continue
@@ -232,7 +233,10 @@ impl Application {
                         );
                     }
                 }
-                Err(_) => {
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // No event — fall through to check monitor flag below
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
                     // Channel closed — monitor thread stopped or shutdown triggered
                     tracing::info!(
                         component = "Application",
@@ -240,6 +244,28 @@ impl Application {
                     );
                     break;
                 }
+            }
+
+            // Check if monitoring was requested via SIGUSR1
+            #[cfg(unix)]
+            if MONITOR_FLAG.load(std::sync::atomic::Ordering::SeqCst) && self.resource_shutdown_tx.is_none() {
+                MONITOR_FLAG.store(false, std::sync::atomic::Ordering::SeqCst);
+
+                let (resource_shutdown_tx, resource_shutdown_rx) = mpsc::channel::<()>();
+                let resource_store = Arc::clone(&self.history_store);
+                let db_path = self.config.storage.get_db_path();
+                let metrics = Arc::clone(&self.shared_metrics);
+
+                tracing::info!(component = "Application", "Enabling ResourceMonitor via signal");
+                let resource_handle = resource_monitor::spawn_resource_monitor(
+                    resource_store,
+                    db_path,
+                    metrics,
+                    resource_shutdown_rx,
+                );
+                self.resource_shutdown_tx = Some(resource_shutdown_tx);
+                self.resource_handle = Some(resource_handle);
+                tracing::info!(component = "Application", "ResourceMonitor enabled");
             }
         }
 
@@ -439,6 +465,7 @@ pub fn run_service(monitor: bool) -> Result<()> {
         unsafe {
             libc::signal(libc::SIGTERM, signal_handler as *const () as libc::sighandler_t);
             libc::signal(libc::SIGINT, signal_handler as *const () as libc::sighandler_t);
+            libc::signal(libc::SIGUSR1, monitor_signal_handler as *const () as libc::sighandler_t);
         }
 
         // Store the flag globally for the signal handler
@@ -471,9 +498,17 @@ pub fn run_service(monitor: bool) -> Result<()> {
 static SHUTDOWN_FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(unix)]
+static MONITOR_FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
 extern "C" fn signal_handler(_sig: libc::c_int) {
     SHUTDOWN_FLAG.store(false, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(component = "Application", "Received shutdown signal, initiating graceful shutdown");
+}
+
+#[cfg(unix)]
+extern "C" fn monitor_signal_handler(_sig: libc::c_int) {
+    MONITOR_FLAG.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[cfg(test)]

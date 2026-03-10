@@ -26,17 +26,6 @@ impl ServiceManager {
             anyhow::bail!("Service is already running (PID: {})", pid);
         }
 
-        // If monitor mode, run in foreground (Task 12.2)
-        if self.monitor {
-            // Write our own PID
-            fs::write(&self.pid_file, std::process::id().to_string())
-                .context("Failed to write PID file")?;
-            println!("✓ Service started with monitoring (PID: {})", std::process::id());
-            // Run service in foreground - logs go to stdout
-            crate::app::run_service(true)?;
-            return Ok(());
-        }
-
         let _exe = std::env::current_exe()
             .context("Failed to get current executable path")?;
 
