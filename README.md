@@ -37,7 +37,7 @@ This is the Rust implementation of [clipkeeper](https://github.com/mattpassman/c
 
 ### Windows
 
-1. Download `clipkeeper.exe` from the [latest release](https://github.com/mattpassman/clipkeeper-rust/releases/latest)
+1. Download `clipkeeper.exe` from the [latest release](https://github.com/mattpassman/clipkeeper_rust/releases/latest)
 2. Move it to a folder in your PATH, for example `C:\Users\<YourUser>\bin\`
 3. If the folder isn't already in your PATH, add it:
 
