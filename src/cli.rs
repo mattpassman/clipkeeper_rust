@@ -388,11 +388,10 @@ fn handle_interactive_list(
         .with_prompt("Select entry to copy (Esc to cancel)")
         .items(&items)
         .default(0)
-        .interact_opt()
-        .context("Interactive selection failed")?;
+        .interact_opt();
 
     match selection {
-        Some(idx) => {
+        Ok(Some(idx)) => {
             let entry = &entries[idx];
             let clipboard_service = crate::clipboard_service::ClipboardService::new()
                 .context("Failed to initialize clipboard")?;
@@ -400,7 +399,10 @@ fn handle_interactive_list(
                 .context("Failed to copy to clipboard")?;
             println!("{} Copied to clipboard", CHECK);
         }
-        None => println!("Cancelled"),
+        Ok(None) | Err(_) => {
+            // Esc pressed or interaction interrupted — just exit cleanly
+            println!("Cancelled");
+        }
     }
 
     Ok(())
