@@ -88,25 +88,72 @@ pub struct ClassificationMetadata {
 ///
 /// Supports language detection for code content and returns structured classification
 /// with confidence scores and metadata.
+/// Classifies clipboard content into types: url, json, xml, code, markdown, file_path, image, text.
+///
+/// Supports language detection for code content and returns structured classification
+/// with confidence scores and metadata.
+///
+/// All regex patterns are pre-compiled at construction time to avoid per-call overhead.
 pub struct ContentClassifier {
     url_pattern: Regex,
     markdown_patterns: Vec<Regex>,
-    language_keywords: HashMap<&'static str, Vec<&'static str>>,
+    // Pre-compiled code detection patterns
+    code_chars_pattern: Regex,
+    indentation_pattern: Regex,
+    operators_pattern: Regex,
+    // Pre-compiled XML root element pattern
+    xml_root_pattern: Regex,
+    // Pre-compiled file path patterns
+    windows_path_pattern: Regex,
+    unix_path_pattern: Regex,
+    // Pre-compiled keyword regexes per language: Vec<(regex, weight, is_special)>
+    // is_special keywords use contains() instead of regex
+    language_keyword_regexes: HashMap<&'static str, Vec<CompiledKeyword>>,
+}
+
+/// A pre-compiled keyword matcher for language detection.
+enum CompiledKeyword {
+    /// Word-boundary regex match with a weight
+    Regex(Regex, f64),
+    /// Simple substring match (for keywords containing special chars like `::`, `<?`, `<`)
+    Contains(&'static str, f64),
 }
 
 impl ContentClassifier {
     pub fn new() -> Self {
-        let mut language_keywords = HashMap::new();
-        language_keywords.insert("javascript", vec!["function", "const", "let", "var", "class", "import", "export", "async", "await", "=>"]);
-        language_keywords.insert("typescript", vec!["interface", "type", "enum", "namespace", "implements", "extends"]);
-        language_keywords.insert("python", vec!["def", "class", "import", "from", "lambda", "yield", "async", "await", "__init__"]);
-        language_keywords.insert("java", vec!["public", "private", "protected", "class", "interface", "extends", "implements", "package"]);
-        language_keywords.insert("cpp", vec!["#include", "namespace", "class", "template", "typename", "std::"]);
-        language_keywords.insert("go", vec!["package", "import", "func", "type", "struct", "interface", "defer", "go"]);
-        language_keywords.insert("rust", vec!["fn", "let", "mut", "impl", "trait", "struct", "enum", "use", "mod"]);
-        language_keywords.insert("ruby", vec!["def", "class", "module", "require", "end", "do", "yield"]);
-        language_keywords.insert("php", vec!["<?php", "function", "class", "namespace", "use", "public", "private", "protected"]);
-        language_keywords.insert("sql", vec!["SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "TABLE"]);
+        let language_keywords: Vec<(&'static str, Vec<&'static str>)> = vec![
+            ("javascript", vec!["function", "const", "let", "var", "class", "import", "export", "async", "await", "=>"]),
+            ("typescript", vec!["interface", "type", "enum", "namespace", "implements", "extends"]),
+            ("python", vec!["def", "class", "import", "from", "lambda", "yield", "async", "await", "__init__"]),
+            ("java", vec!["public", "private", "protected", "class", "interface", "extends", "implements", "package"]),
+            ("cpp", vec!["#include", "namespace", "class", "template", "typename", "std::"]),
+            ("go", vec!["package", "import", "func", "type", "struct", "interface", "defer", "go"]),
+            ("rust", vec!["fn", "let", "mut", "impl", "trait", "struct", "enum", "use", "mod"]),
+            ("ruby", vec!["def", "class", "module", "require", "end", "do", "yield"]),
+            ("php", vec!["<?php", "function", "class", "namespace", "use", "public", "private", "protected"]),
+            ("sql", vec!["SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "TABLE"]),
+        ];
+
+        // Pre-compile keyword regexes per language
+        let language_keyword_regexes = language_keywords
+            .into_iter()
+            .map(|(lang, keywords)| {
+                let compiled: Vec<CompiledKeyword> = keywords
+                    .into_iter()
+                    .map(|kw| {
+                        let weight = if kw.len() > 5 { 1.5 } else { 1.0 };
+                        let is_special = kw.contains('<') || kw.contains("::") || kw.contains("<?");
+                        if is_special {
+                            CompiledKeyword::Contains(kw, weight)
+                        } else {
+                            let pattern = format!(r"(?i)\b{}\b", regex::escape(kw));
+                            CompiledKeyword::Regex(Regex::new(&pattern).unwrap(), weight)
+                        }
+                    })
+                    .collect();
+                (lang, compiled)
+            })
+            .collect();
 
         Self {
             url_pattern: Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").unwrap(),
@@ -120,7 +167,13 @@ impl ContentClassifier {
                 Regex::new(r"(?ms)^```[\s\S]*?```$").unwrap(),
                 Regex::new(r"`[^`]+`").unwrap(),
             ],
-            language_keywords,
+            code_chars_pattern: Regex::new(r"[{}\[\]();]").unwrap(),
+            indentation_pattern: Regex::new(r"(?m)^[ \t]+").unwrap(),
+            operators_pattern: Regex::new(r"[=<>!+\-*/%&|^~]").unwrap(),
+            xml_root_pattern: Regex::new(r"<([a-zA-Z][^>]*)>[\s\S]*</([a-zA-Z][^>]*)>").unwrap(),
+            windows_path_pattern: Regex::new(r#"^[a-zA-Z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*$"#).unwrap(),
+            unix_path_pattern: Regex::new(r"^/(?:[^/]+/?)*$|^~(?:/[^/]+)*/?$").unwrap(),
+            language_keyword_regexes,
         }
     }
 
@@ -188,9 +241,7 @@ impl ContentClassifier {
         if content.trim().starts_with('<') {
             let trimmed = content.trim();
             let has_xml_decl = trimmed.starts_with("<?xml");
-            let has_root_element = Regex::new(r"<([a-zA-Z][^>]*)>[\s\S]*</([a-zA-Z][^>]*)>")
-                .unwrap()
-                .is_match(trimmed);
+            let has_root_element = self.xml_root_pattern.is_match(trimmed);
 
             if has_xml_decl || has_root_element {
                 log_classification("xml", content.len());
@@ -204,7 +255,7 @@ impl ContentClassifier {
         }
 
         // Check file path
-        if is_file_path(content) {
+        if self.is_file_path(content) {
             log_classification("file_path", content.len());
             return Classification {
                 content_type: ContentType::FilePath,
@@ -251,9 +302,9 @@ impl ContentClassifier {
     fn detect_code(&self, content: &str) -> Option<(String, f64)> {
         let trimmed = content.trim();
 
-        let has_code_chars = Regex::new(r"[{}\[\]();]").unwrap().is_match(trimmed);
-        let has_indentation = Regex::new(r"(?m)^[ \t]+").unwrap().is_match(trimmed);
-        let has_operators = Regex::new(r"[=<>!+\-*/%&|^~]").unwrap().is_match(trimmed);
+        let has_code_chars = self.code_chars_pattern.is_match(trimmed);
+        let has_indentation = self.indentation_pattern.is_match(trimmed);
+        let has_operators = self.operators_pattern.is_match(trimmed);
 
         let mut code_score: f64 = 0.0;
         if has_code_chars { code_score += 0.3; }
@@ -264,18 +315,17 @@ impl ContentClassifier {
         let mut best_language: Option<String> = None;
         let mut max_score: f64 = 0.0;
 
-        for (&language, keywords) in &self.language_keywords {
+        for (&language, keywords) in &self.language_keyword_regexes {
             let mut score: f64 = 0.0;
-            for &keyword in keywords {
-                let is_special = keyword.contains('<') || keyword.contains("::") || keyword.contains("<?");
-                let matched = if is_special {
-                    trimmed.contains(keyword)
-                } else {
-                    let pattern = format!(r"(?i)\b{}\b", regex::escape(keyword));
-                    Regex::new(&pattern).map(|r| r.is_match(trimmed)).unwrap_or(false)
+            for compiled_kw in keywords {
+                let matched = match compiled_kw {
+                    CompiledKeyword::Contains(kw, _) => trimmed.contains(kw),
+                    CompiledKeyword::Regex(re, _) => re.is_match(trimmed),
                 };
                 if matched {
-                    let weight = if keyword.len() > 5 { 1.5 } else { 1.0 };
+                    let weight = match compiled_kw {
+                        CompiledKeyword::Contains(_, w) | CompiledKeyword::Regex(_, w) => *w,
+                    };
                     score += weight;
                 }
             }
@@ -302,6 +352,10 @@ impl ContentClassifier {
 
         None
     }
+    /// Check if content looks like a file path using pre-compiled patterns.
+    fn is_file_path(&self, content: &str) -> bool {
+        self.windows_path_pattern.is_match(content) || self.unix_path_pattern.is_match(content)
+    }
 }
 
 fn log_classification(content_type: &str, content_length: usize) {
@@ -311,12 +365,6 @@ fn log_classification(content_type: &str, content_length: usize) {
         content_type = content_type,
         content_length = content_length
     );
-}
-
-fn is_file_path(content: &str) -> bool {
-    let windows_path = Regex::new(r#"^[a-zA-Z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*$"#).unwrap();
-    let unix_path = Regex::new(r"^/(?:[^/]+/?)*$|^~(?:/[^/]+)*/?$").unwrap();
-    windows_path.is_match(content) || unix_path.is_match(content)
 }
 
 impl Default for ContentClassifier {
