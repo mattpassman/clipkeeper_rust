@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::io::IsTerminal;
 use std::path::Path;
 use crate::errors::{Context, Result};
 
@@ -339,7 +340,7 @@ pub fn handle_list(
         }
         _ => {
             // Interactive mode (Task 13.1) - only when TTY and not --no-interactive
-            let is_tty = atty::is(atty::Stream::Stdout);
+            let is_tty = std::io::stdout().is_terminal();
             if is_tty && !no_interactive {
                 handle_interactive_list(&entries, &store)?;
             } else {
@@ -426,7 +427,7 @@ pub fn handle_search(
     }
 
     // Interactive mode is default (unless --no-interactive is specified)
-    let is_tty = atty::is(atty::Stream::Stdout);
+    let is_tty = std::io::stdout().is_terminal();
     if is_tty && !no_interactive {
         handle_interactive_list(&entries, &store)?;
         return Ok(());
