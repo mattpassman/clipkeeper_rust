@@ -185,6 +185,7 @@ pub fn spawn_retention_service(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content_classifier::ContentType;
     use std::path::Path;
     use tempfile::TempDir;
 
@@ -266,7 +267,7 @@ mod tests {
         insert_entry_with_timestamp(&db_path, "old entry", old_timestamp);
 
         // Insert a recent entry via the normal API
-        store.save("recent entry", "text").unwrap();
+        store.save("recent entry", ContentType::Text).unwrap();
 
         assert_eq!(count_entries(&db_path), 2);
 
@@ -290,7 +291,7 @@ mod tests {
         // Insert entries that are within the retention period (5 days ago, retention = 30)
         let recent_timestamp = chrono::Utc::now().timestamp_millis() - (5 * 24 * 60 * 60 * 1000);
         insert_entry_with_timestamp(&db_path, "recent enough", recent_timestamp);
-        store.save("brand new", "text").unwrap();
+        store.save("brand new", ContentType::Text).unwrap();
 
         assert_eq!(count_entries(&db_path), 2);
 

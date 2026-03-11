@@ -8,6 +8,9 @@ use std::time::Duration;
 use crate::errors::Result;
 use crate::history_store::HistoryStore;
 
+#[cfg(test)]
+use crate::content_classifier::ContentType;
+
 /// Maximum number of metric samples to keep in memory.
 const MAX_METRICS_HISTORY: usize = 100;
 
@@ -535,8 +538,8 @@ mod tests {
         let store = create_test_store(temp_dir.path());
         let db_path = temp_dir.path().join("test.db");
 
-        store.save("hello world", "text").unwrap();
-        store.save("https://example.com", "url").unwrap();
+        store.save("hello world", ContentType::Text).unwrap();
+        store.save("https://example.com", ContentType::Url).unwrap();
 
         let shared_store = Arc::new(Mutex::new(store));
         let metrics = new_shared_metrics();

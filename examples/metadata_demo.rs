@@ -5,6 +5,7 @@
 /// 2. Retrieving entries with deserialized metadata
 /// 3. Handling entries with missing/invalid metadata (Node.js compatibility)
 
+use clipkeeper::content_classifier::ContentType;
 use clipkeeper::history_store::HistoryStore;
 use tempfile::TempDir;
 
@@ -19,16 +20,16 @@ fn main() -> anyhow::Result<()> {
     println!("1. Saving entries with metadata...");
     
     // Save various types of content
-    let entries = vec![
-        ("Hello, World!", "text"),
-        ("function test() { return 42; }", "code"),
-        ("https://example.com/api/v1/users", "url"),
-        ("This is a longer piece of text with multiple words and sentences.", "text"),
+    let entries: Vec<(&str, ContentType)> = vec![
+        ("Hello, World!", ContentType::Text),
+        ("function test() { return 42; }", ContentType::Code),
+        ("https://example.com/api/v1/users", ContentType::Url),
+        ("This is a longer piece of text with multiple words and sentences.", ContentType::Text),
     ];
 
     for (content, content_type) in &entries {
-        let id = store.save(content, content_type)?;
-        println!("   Saved: {} ({})", &id[..8], content_type);
+        let id = store.save(content, *content_type)?;
+        println!("   Saved: {} ({})", &id.to_string()[..8], content_type);
     }
 
     println!("\n2. Retrieving entries with metadata...\n");
@@ -36,7 +37,7 @@ fn main() -> anyhow::Result<()> {
     let all_entries = store.list(10, None, None, None)?;
     
     for entry in &all_entries {
-        println!("Entry: {}", &entry.id[..8]);
+        println!("Entry: {}", &entry.id.to_string()[..8]);
         println!("  Content: {}", entry.content);
         println!("  Type: {}", entry.content_type);
         println!("  Metadata:");
@@ -50,7 +51,7 @@ fn main() -> anyhow::Result<()> {
     println!("3. Metadata is preserved across all retrieval methods...\n");
     
     // Test metadata in get_by_id
-    let first_id = all_entries[0].id.clone();
+    let first_id = all_entries[0].id.to_string();
     let entry_by_id = store.get_by_id(&first_id)?;
     println!("Retrieved by ID:");
     println!("  Character count: {}", entry_by_id.metadata.character_count);

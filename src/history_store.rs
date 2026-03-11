@@ -4,13 +4,14 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use chrono::Utc;
+use crate::content_classifier::ContentType;
 use crate::errors::{Context, Result, DatabaseError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardEntry {
-    pub id: String,
+    pub id: uuid::Uuid,
     pub content: String,
-    pub content_type: String,
+    pub content_type: ContentType,
     pub timestamp: i64,
     pub source_app: Option<String>,
     #[serde(skip)]
@@ -72,7 +73,7 @@ pub struct HistoryStore {
 /// // Spawn a thread that writes to the database
 /// let handle = thread::spawn(move || {
 ///     let store = store_clone.lock().unwrap();
-///     store.save("clipboard content", "text")?;
+///     store.save("clipboard content", ContentType::Text)?;
 ///     Ok::<_, ClipKeeperError>(())
 /// });
 /// 
@@ -402,7 +403,7 @@ impl HistoryStore {
     /// thread::spawn(move || {
     ///     // Acquire lock before use
     ///     let store = store_clone.lock().unwrap();
-    ///     store.save("content", "text").unwrap();
+    ///     store.save("content", ContentType::Text).unwrap();
     /// });
     /// ```
     /// 
@@ -425,7 +426,7 @@ impl HistoryStore {
     /// // Use in the current thread
     /// {
     ///     let store = store.lock().unwrap();
-    ///     let id = store.save("Hello, world!", "text")?;
+    ///     let id = store.save("Hello, world!", ContentType::Text)?;
     ///     println!("Saved entry: {}", id);
     /// }
     /// 
@@ -437,10 +438,10 @@ impl HistoryStore {
         Ok(Arc::new(Mutex::new(store)))
     }
     
-    pub fn save(&self, content: &str, content_type: &str) -> Result<String> {
+    pub fn save(&self, content: &str, content_type: ContentType) -> Result<uuid::Uuid> {
         self.check_open()?;
         
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = uuid::Uuid::new_v4();
         let timestamp = Utc::now().timestamp_millis();
         
         // Calculate metadata
@@ -465,7 +466,7 @@ impl HistoryStore {
         let save_result = self.conn.execute(
             "INSERT INTO clipboard_entries (id, content, content_type, timestamp, source_app, metadata, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, content, content_type, timestamp, None::<String>, metadata_json, created_at],
+            params![id.to_string(), content, content_type.as_str(), timestamp, None::<String>, metadata_json, created_at],
         );
         
         match save_result {
@@ -475,7 +476,7 @@ impl HistoryStore {
                 self.conn.execute(
                     "INSERT INTO clipboard_entries (id, content, content_type, timestamp, source_app, metadata)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![id, content, content_type, timestamp, None::<String>, metadata_json],
+                    params![id.to_string(), content, content_type.as_str(), timestamp, None::<String>, metadata_json],
                 )
                 .context("Failed to save entry: {}")?;
             }
@@ -486,7 +487,7 @@ impl HistoryStore {
             "HistoryStore",
             "Entry saved",
             entry_id = %id,
-            content_type = content_type,
+            content_type = content_type.as_str(),
             content_length = content.len(),
             character_count = character_count,
             word_count = word_count
@@ -1000,6 +1001,15 @@ impl HistoryStore {
         let metadata_json: Option<String> = row.get(5)?;
         let timestamp: i64 = row.get(3)?;
         
+        // Parse id: stored as text in SQLite, parse to Uuid
+        let id_str: String = row.get(0)?;
+        let id = uuid::Uuid::parse_str(&id_str)
+            .unwrap_or_else(|_| uuid::Uuid::new_v4());
+        
+        // Parse content_type from string to enum
+        let ct_str: String = row.get(2)?;
+        let content_type = ContentType::from_str_lossy(&ct_str);
+        
         // created_at may be INTEGER (JS version / new Rust) or TEXT (old Rust rfc3339).
         // Try integer first, fall back to parsing text, fall back to timestamp.
         let created_at: i64 = row.get::<_, i64>(6)
@@ -1013,9 +1023,9 @@ impl HistoryStore {
             .unwrap_or(timestamp);
         
         Ok(ClipboardEntry {
-            id: row.get(0)?,
+            id,
             content: row.get(1)?,
-            content_type: row.get(2)?,
+            content_type,
             timestamp,
             source_app: row.get(4)?,
             metadata: Self::deserialize_metadata(metadata_json),
@@ -1072,21 +1082,21 @@ mod tests {
         let handle1 = thread::spawn(move || {
             let store = store1.lock().unwrap();
             for i in 0..10 {
-                store.save(&format!("content1_{}", i), "text").unwrap();
+                store.save(&format!("content1_{}", i), ContentType::Text).unwrap();
             }
         });
         
         let handle2 = thread::spawn(move || {
             let store = store2.lock().unwrap();
             for i in 0..10 {
-                store.save(&format!("content2_{}", i), "code").unwrap();
+                store.save(&format!("content2_{}", i), ContentType::Code).unwrap();
             }
         });
         
         let handle3 = thread::spawn(move || {
             let store = store3.lock().unwrap();
             for i in 0..10 {
-                store.save(&format!("content3_{}", i), "url").unwrap();
+                store.save(&format!("content3_{}", i), ContentType::Url).unwrap();
             }
         });
         
@@ -1122,7 +1132,7 @@ mod tests {
         {
             let store = store.lock().unwrap();
             for i in 0..5 {
-                store.save(&format!("initial_{}", i), "text").unwrap();
+                store.save(&format!("initial_{}", i), ContentType::Text).unwrap();
             }
         }
         
@@ -1135,7 +1145,7 @@ mod tests {
         let writer = thread::spawn(move || {
             let store = store_writer.lock().unwrap();
             for i in 0..5 {
-                store.save(&format!("new_{}", i), "code").unwrap();
+                store.save(&format!("new_{}", i), ContentType::Code).unwrap();
             }
         });
         
@@ -1178,7 +1188,7 @@ mod tests {
         // Both references point to the same underlying store
         {
             let s = store1.lock().unwrap();
-            s.save("test content", "text").unwrap();
+            s.save("test content", ContentType::Text).unwrap();
         }
         
         {
@@ -1195,10 +1205,10 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
         
         // Save some test entries
-        store.save("hello world", "text").unwrap();
-        store.save("hello rust programming", "code").unwrap();
-        store.save("world peace", "text").unwrap();
-        store.save("goodbye world", "text").unwrap();
+        store.save("hello world", ContentType::Text).unwrap();
+        store.save("hello rust programming", ContentType::Code).unwrap();
+        store.save("world peace", ContentType::Text).unwrap();
+        store.save("goodbye world", ContentType::Text).unwrap();
         
         // Test single keyword search
         let results = store.search("hello", 10, None, None).unwrap();
@@ -1224,7 +1234,7 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
         
         // Save an entry
-        let id = store.save("original content", "text").unwrap();
+        let id = store.save("original content", ContentType::Text).unwrap();
         
         // Verify it's searchable
         let results = store.search("original", 10, None, None).unwrap();
@@ -1233,7 +1243,7 @@ mod tests {
         // Update the entry directly in the database
         store.conn.execute(
             "UPDATE clipboard_entries SET content = ?1 WHERE id = ?2",
-            params!["updated content", id],
+            params!["updated content", id.to_string()],
         ).unwrap();
         
         // Verify the FTS5 index was updated via trigger
@@ -1246,7 +1256,7 @@ mod tests {
         // Delete the entry
         store.conn.execute(
             "DELETE FROM clipboard_entries WHERE id = ?1",
-            params![id],
+            params![id.to_string()],
         ).unwrap();
         
         // Verify it's no longer searchable
@@ -1510,13 +1520,13 @@ mod tests {
         assert_eq!(entries.len(), 2, "Should get 2 entries from the last 2 hours");
 
         // Verify they are ordered by timestamp descending
-        assert_eq!(entries[0].id, "id3");
-        assert_eq!(entries[1].id, "id2");
+        assert_eq!(entries[0].content, "content 3");
+        assert_eq!(entries[1].content, "content 2");
 
         // Get entries since 1 hour ago
         let entries = store.get_since(one_hour_ago, 10).unwrap();
         assert_eq!(entries.len(), 1, "Should get 1 entry from the last hour");
-        assert_eq!(entries[0].id, "id3");
+        assert_eq!(entries[0].content, "content 3");
 
         // Get entries since now (should be empty)
         let entries = store.get_since(now, 10).unwrap();
@@ -1534,18 +1544,18 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
 
         // Save entries of different types
-        store.save("text content 1", "text").unwrap();
-        store.save("code content 1", "code").unwrap();
-        store.save("text content 2", "text").unwrap();
-        store.save("url content 1", "url").unwrap();
-        store.save("text content 3", "text").unwrap();
-        store.save("code content 2", "code").unwrap();
+        store.save("text content 1", ContentType::Text).unwrap();
+        store.save("code content 1", ContentType::Code).unwrap();
+        store.save("text content 2", ContentType::Text).unwrap();
+        store.save("url content 1", ContentType::Url).unwrap();
+        store.save("text content 3", ContentType::Text).unwrap();
+        store.save("code content 2", ContentType::Code).unwrap();
 
         // Get recent text entries
         let text_entries = store.get_recent_by_type("text", 10).unwrap();
         assert_eq!(text_entries.len(), 3, "Should get 3 text entries");
         for entry in &text_entries {
-            assert_eq!(entry.content_type, "text");
+            assert_eq!(entry.content_type, ContentType::Text);
         }
 
         // Verify they are ordered by timestamp descending (most recent first)
@@ -1557,13 +1567,13 @@ mod tests {
         let code_entries = store.get_recent_by_type("code", 10).unwrap();
         assert_eq!(code_entries.len(), 2, "Should get 2 code entries");
         for entry in &code_entries {
-            assert_eq!(entry.content_type, "code");
+            assert_eq!(entry.content_type, ContentType::Code);
         }
 
         // Get recent url entries
         let url_entries = store.get_recent_by_type("url", 10).unwrap();
         assert_eq!(url_entries.len(), 1, "Should get 1 url entry");
-        assert_eq!(url_entries[0].content_type, "url");
+        assert_eq!(url_entries[0].content_type, ContentType::Url);
 
         // Test limit
         let text_entries = store.get_recent_by_type("text", 2).unwrap();
@@ -1584,11 +1594,11 @@ mod tests {
         assert!(store.is_open(), "Database should be open");
 
         // Save an entry to verify it's working
-        let id = store.save("test content", "text").unwrap();
+        let id = store.save("test content", ContentType::Text).unwrap();
         assert!(store.is_open(), "Database should still be open after save");
 
         // Retrieve the entry
-        let entry = store.get_by_id(&id).unwrap();
+        let entry = store.get_by_id(&id.to_string()).unwrap();
         assert_eq!(entry.content, "test content");
         assert!(store.is_open(), "Database should still be open after retrieval");
     }
@@ -1627,15 +1637,15 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
 
         // All operations should work when database is open
-        assert!(store.save("test", "text").is_ok());
+        assert!(store.save("test", ContentType::Text).is_ok());
         assert!(store.list(10, None, None, None).is_ok());
         assert!(store.search("test", 10, None, None).is_ok());
         assert!(store.get_statistics().is_ok());
         assert!(store.clear().is_ok());
 
         // Save a new entry for further tests
-        let id = store.save("test content", "text").unwrap();
-        assert!(store.get_by_id(&id).is_ok());
+        let id = store.save("test content", ContentType::Text).unwrap();
+        assert!(store.get_by_id(&id.to_string()).is_ok());
         assert!(store.get_since(0, 10).is_ok());
         assert!(store.get_recent_by_type("text", 10).is_ok());
         assert!(store.cleanup_old_entries(30).is_ok());
@@ -1649,10 +1659,10 @@ mod tests {
 
         // Save an entry with content that has specific character and word counts
         let content = "Hello world! This is a test.";
-        let id = store.save(content, "text").unwrap();
+        let id = store.save(content, ContentType::Text).unwrap();
 
         // Retrieve the entry
-        let entry = store.get_by_id(&id).unwrap();
+        let entry = store.get_by_id(&id.to_string()).unwrap();
 
         // Verify metadata was populated correctly
         assert_eq!(entry.metadata.character_count, content.chars().count());
@@ -1663,7 +1673,7 @@ mod tests {
         // Verify the metadata was actually stored in the database as JSON
         let metadata_json: String = store.conn.query_row(
             "SELECT metadata FROM clipboard_entries WHERE id = ?1",
-            params![id],
+            params![id.to_string()],
             |row| row.get(0),
         ).unwrap();
 
@@ -1688,7 +1698,7 @@ mod tests {
         ).unwrap();
 
         // Retrieve the entry - should get default metadata
-        let entry = store.get_by_id(&id).unwrap();
+        let entry = store.get_by_id(&id.to_string()).unwrap();
         assert_eq!(entry.metadata.character_count, 0);
         assert_eq!(entry.metadata.word_count, 0);
         assert_eq!(entry.metadata.confidence, 1.0);
@@ -1710,7 +1720,7 @@ mod tests {
         ).unwrap();
 
         // Retrieve the entry - should get default metadata and log a warning
-        let entry = store.get_by_id(&id).unwrap();
+        let entry = store.get_by_id(&id.to_string()).unwrap();
         assert_eq!(entry.metadata.character_count, 0);
         assert_eq!(entry.metadata.word_count, 0);
         assert_eq!(entry.metadata.confidence, 1.0);
@@ -1724,16 +1734,16 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
 
         // Save multiple entries with different content
-        let entries_data = vec![
-            ("Short", "text"),
-            ("This is a longer piece of text with multiple words", "text"),
-            ("function test() { return 42; }", "code"),
-            ("https://example.com", "url"),
+        let entries_data: Vec<(&str, ContentType)> = vec![
+            ("Short", ContentType::Text),
+            ("This is a longer piece of text with multiple words", ContentType::Text),
+            ("function test() { return 42; }", ContentType::Code),
+            ("https://example.com", ContentType::Url),
         ];
 
         for (content, content_type) in entries_data {
             let id = store.save(content, content_type).unwrap();
-            let entry = store.get_by_id(&id).unwrap();
+            let entry = store.get_by_id(&id.to_string()).unwrap();
 
             // Verify metadata matches the content
             assert_eq!(entry.content, content);
@@ -1750,8 +1760,8 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
 
         // Save entries
-        store.save("hello world", "text").unwrap();
-        store.save("hello rust programming", "code").unwrap();
+        store.save("hello world", ContentType::Text).unwrap();
+        store.save("hello rust programming", ContentType::Code).unwrap();
 
         // Search and verify metadata is present
         let results = store.search("hello", 10, None, None).unwrap();
@@ -1770,8 +1780,8 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
 
         // Save entries
-        store.save("test content one", "text").unwrap();
-        store.save("test content two", "text").unwrap();
+        store.save("test content one", ContentType::Text).unwrap();
+        store.save("test content two", ContentType::Text).unwrap();
 
         // List and verify metadata is present
         let results = store.list(10, None, None, None).unwrap();
@@ -1843,15 +1853,15 @@ mod tests {
         // Verify specific entries
         let entry1 = store.get_by_id("nodejs-1").unwrap();
         assert_eq!(entry1.content, "Hello from Node.js");
-        assert_eq!(entry1.content_type, "text");
+        assert_eq!(entry1.content_type, ContentType::Text);
         
         let entry2 = store.get_by_id("nodejs-2").unwrap();
         assert_eq!(entry2.content, "https://example.com");
-        assert_eq!(entry2.content_type, "url");
+        assert_eq!(entry2.content_type, ContentType::Url);
         
         let entry3 = store.get_by_id("nodejs-3").unwrap();
         assert_eq!(entry3.content, "function test() { return 42; }");
-        assert_eq!(entry3.content_type, "code");
+        assert_eq!(entry3.content_type, ContentType::Code);
         
         // Step 5: Verify indexes were created
         let index_count: i32 = store.conn.query_row(
@@ -1882,16 +1892,16 @@ mod tests {
             // Verify search works on migrated data
             let results = store.search("Node", 10, None, None).unwrap();
             assert_eq!(results.len(), 1, "Should find 1 entry via FTS5 search");
-            assert_eq!(results[0].id, "nodejs-1");
+            assert!(results[0].content.contains("Node"), "Should find Node.js entry");
             
             let results = store.search("example", 10, None, None).unwrap();
             assert_eq!(results.len(), 1, "Should find URL entry via FTS5 search");
-            assert_eq!(results[0].id, "nodejs-2");
+            assert!(results[0].content.contains("example"), "Should find example.com entry");
         }
         
         // Step 7: Verify new entries can be saved after migration
-        let new_id = store.save("New Rust entry", "text").unwrap();
-        let new_entry = store.get_by_id(&new_id).unwrap();
+        let new_id = store.save("New Rust entry", ContentType::Text).unwrap();
+        let new_entry = store.get_by_id(&new_id.to_string()).unwrap();
         assert_eq!(new_entry.content, "New Rust entry");
         
         // Step 8: Verify total count

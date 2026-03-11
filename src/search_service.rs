@@ -1,3 +1,4 @@
+use crate::content_classifier::ContentType;
 use crate::errors::Result;
 use crate::history_store::{ClipboardEntry, SharedHistoryStore};
 use chrono::{DateTime, Utc};
@@ -19,9 +20,9 @@ pub struct SearchOptions {
 /// Formatted search result with preview and relative time
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
-    pub id: String,
+    pub id: uuid::Uuid,
     pub content: String,
-    pub content_type: String,
+    pub content_type: ContentType,
     pub timestamp: i64,
     pub preview: String,
     pub relative_time: String,
@@ -95,9 +96,9 @@ impl SearchService {
         entries
             .into_iter()
             .map(|entry| SearchResult {
-                id: entry.id.clone(),
+                id: entry.id,
                 content: entry.content.clone(),
-                content_type: entry.content_type.clone(),
+                content_type: entry.content_type,
                 timestamp: entry.timestamp,
                 preview: Self::create_preview(&entry.content, 100),
                 relative_time: Self::format_relative_time(entry.timestamp),

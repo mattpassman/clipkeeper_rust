@@ -1,3 +1,4 @@
+use clipkeeper::content_classifier::ContentType;
 use clipkeeper::history_store::HistoryStore;
 use clipkeeper::search_service::{SearchService, SearchOptions};
 use tempfile::tempdir;
@@ -13,10 +14,10 @@ fn test_search_service_integration() {
     let shared_store = HistoryStore::new_shared(&db_path).unwrap();
     
     // Add test entries
-    store.save("Hello world", "text").unwrap();
-    store.save("Rust programming language", "text").unwrap();
-    store.save("Python code example", "code").unwrap();
-    store.save("JavaScript function", "code").unwrap();
+    store.save("Hello world", ContentType::Text).unwrap();
+    store.save("Rust programming language", ContentType::Text).unwrap();
+    store.save("Python code example", ContentType::Code).unwrap();
+    store.save("JavaScript function", ContentType::Code).unwrap();
     
     // Create SearchService
     let search_service = SearchService::new(shared_store);
@@ -30,7 +31,7 @@ fn test_search_service_integration() {
     let results = search_service.search("Rust", options.clone()).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].content.contains("Rust"));
-    assert_eq!(results[0].content_type, "text");
+    assert_eq!(results[0].content_type, ContentType::Text);
     assert!(!results[0].preview.is_empty());
     assert!(!results[0].relative_time.is_empty());
     
@@ -47,7 +48,7 @@ fn test_search_service_integration() {
     };
     let results = search_service.search("", options_with_filter).unwrap();
     assert_eq!(results.len(), 2);
-    assert!(results.iter().all(|r| r.content_type == "code"));
+    assert!(results.iter().all(|r| r.content_type == ContentType::Code));
     
     // Test 4: Empty query returns recent entries
     let results = search_service.search("", options.clone()).unwrap();
@@ -60,7 +61,7 @@ fn test_search_service_integration() {
     
     // Test 6: Verify preview is created correctly
     let long_content = "a".repeat(150);
-    store.save(&long_content, "text").unwrap();
+    store.save(&long_content, ContentType::Text).unwrap();
     let results = search_service.search("", options.clone()).unwrap();
     assert!(results.len() > 0);
     let long_result = results.iter().find(|r| r.content.len() > 100);
@@ -83,7 +84,7 @@ fn test_search_service_with_limit() {
     
     // Add 10 entries
     for i in 0..10 {
-        store.save(&format!("Entry {}", i), "text").unwrap();
+        store.save(&format!("Entry {}", i), ContentType::Text).unwrap();
     }
     
     let search_service = SearchService::new(shared_store);

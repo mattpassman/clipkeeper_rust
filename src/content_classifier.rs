@@ -1,12 +1,79 @@
 use regex::Regex;
 use std::collections::HashMap;
 
+use std::fmt;
+
+/// The fixed set of content types that the classifier can produce.
+/// Stored on the stack — no heap allocation needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentType {
+    Text,
+    Url,
+    Json,
+    Xml,
+    Code,
+    Markdown,
+    FilePath,
+    Image,
+}
+
+impl ContentType {
+    /// Parse from a database / user-supplied string.
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "url" => Self::Url,
+            "json" => Self::Json,
+            "xml" => Self::Xml,
+            "code" => Self::Code,
+            "markdown" => Self::Markdown,
+            "file_path" => Self::FilePath,
+            "image" => Self::Image,
+            _ => Self::Text,
+        }
+    }
+
+    /// The canonical string representation stored in the database.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Url => "url",
+            Self::Json => "json",
+            Self::Xml => "xml",
+            Self::Code => "code",
+            Self::Markdown => "markdown",
+            Self::FilePath => "file_path",
+            Self::Image => "image",
+        }
+    }
+}
+
+impl fmt::Display for ContentType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl rusqlite::types::ToSql for ContentType {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(rusqlite::types::ToSqlOutput::Borrowed(
+            rusqlite::types::ValueRef::Text(self.as_str().as_bytes()),
+        ))
+    }
+}
+
+impl rusqlite::types::FromSql for ContentType {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value.as_str().map(ContentType::from_str_lossy)
+    }
+}
+
 /// Structured classification result matching JS feature parity.
 ///
 /// Contains the detected content type, optional programming language,
 /// confidence score, and metadata (character/word counts).
 pub struct Classification {
-    pub content_type: String,
+    pub content_type: ContentType,
     pub language: Option<String>,
     pub confidence: f64,
     pub metadata: ClassificationMetadata,
@@ -57,8 +124,8 @@ impl ContentClassifier {
         }
     }
 
-    /// Classify content and return a simple type string (backward compatible)
-    pub fn classify(&self, content: &str) -> String {
+    /// Classify content and return a ContentType enum (backward compatible)
+    pub fn classify(&self, content: &str) -> ContentType {
         self.classify_detailed(content).content_type
     }
 
@@ -71,7 +138,7 @@ impl ContentClassifier {
 
         if content.is_empty() {
             return Classification {
-                content_type: "text".to_string(),
+                content_type: ContentType::Text,
                 language: None,
                 confidence: 1.0,
                 metadata,
@@ -84,7 +151,7 @@ impl ContentClassifier {
         {
             log_classification("image", content.len());
             return Classification {
-                content_type: "image".to_string(),
+                content_type: ContentType::Image,
                 language: None,
                 confidence: 1.0,
                 metadata,
@@ -95,7 +162,7 @@ impl ContentClassifier {
         if self.url_pattern.is_match(content.trim()) {
             log_classification("url", content.len());
             return Classification {
-                content_type: "url".to_string(),
+                content_type: ContentType::Url,
                 language: None,
                 confidence: 0.95,
                 metadata,
@@ -109,7 +176,7 @@ impl ContentClassifier {
             if serde_json::from_str::<serde_json::Value>(content).is_ok() {
                 log_classification("json", content.len());
                 return Classification {
-                    content_type: "json".to_string(),
+                    content_type: ContentType::Json,
                     language: None,
                     confidence: 0.95,
                     metadata,
@@ -128,7 +195,7 @@ impl ContentClassifier {
             if has_xml_decl || has_root_element {
                 log_classification("xml", content.len());
                 return Classification {
-                    content_type: "xml".to_string(),
+                    content_type: ContentType::Xml,
                     language: None,
                     confidence: 0.9,
                     metadata,
@@ -140,7 +207,7 @@ impl ContentClassifier {
         if is_file_path(content) {
             log_classification("file_path", content.len());
             return Classification {
-                content_type: "file_path".to_string(),
+                content_type: ContentType::FilePath,
                 language: None,
                 confidence: 0.9,
                 metadata,
@@ -152,7 +219,7 @@ impl ContentClassifier {
             if pattern.is_match(content) {
                 log_classification("markdown", content.len());
                 return Classification {
-                    content_type: "markdown".to_string(),
+                    content_type: ContentType::Markdown,
                     language: None,
                     confidence: 0.8,
                     metadata,
@@ -164,7 +231,7 @@ impl ContentClassifier {
         if let Some((language, confidence)) = self.detect_code(content) {
             log_classification("code", content.len());
             return Classification {
-                content_type: "code".to_string(),
+                content_type: ContentType::Code,
                 language: Some(language),
                 confidence,
                 metadata,
@@ -173,7 +240,7 @@ impl ContentClassifier {
 
         log_classification("text", content.len());
         Classification {
-            content_type: "text".to_string(),
+            content_type: ContentType::Text,
             language: None,
             confidence: 1.0,
             metadata,

@@ -362,10 +362,11 @@ fn display_entries_table(entries: &[crate::history_store::ClipboardEntry]) {
     print_table_row(&widths, &["ID", "Type", "Time", "Preview"]);
     print_table_border(&widths, T_RIGHT, CROSS, T_LEFT);
     for entry in entries {
-        let id_short = if entry.id.len() >= 8 { &entry.id[..8] } else { &entry.id };
+        let id_str = entry.id.to_string();
+        let id_short = &id_str[..8];
         let time = format_relative_time(entry.timestamp);
         let preview = format_preview(&entry.content, 40);
-        print_table_row(&widths, &[id_short, &entry.content_type, &time, &preview]);
+        print_table_row(&widths, &[id_short, entry.content_type.as_str(), &time, &preview]);
     }
     print_table_border(&widths, BOTTOM_LEFT, T_UP, BOTTOM_RIGHT);
 }
@@ -379,7 +380,7 @@ fn handle_interactive_list(
     let items: Vec<String> = entries.iter().map(|e| {
         let preview = format_preview(&e.content, 60);
         let time = format_relative_time(e.timestamp);
-        format!("[{}] {} - {}", &e.content_type, preview, time)
+        format!("[{}] {} - {}", e.content_type.as_str(), preview, time)
     }).collect();
 
     let selection = Select::new()
@@ -440,10 +441,11 @@ pub fn handle_search(
     print_table_row(&widths, &["ID", "Type", "Time", "Preview"]);
     print_table_border(&widths, T_RIGHT, CROSS, T_LEFT);
     for entry in &entries {
-        let id_short = if entry.id.len() >= 8 { &entry.id[..8] } else { &entry.id };
+        let id_str = entry.id.to_string();
+        let id_short = &id_str[..8];
         let time = format_relative_time(entry.timestamp);
         let preview = format_preview(&entry.content, 40);
-        print_table_row(&widths, &[id_short, &entry.content_type, &time, &preview]);
+        print_table_row(&widths, &[id_short, entry.content_type.as_str(), &time, &preview]);
     }
     print_table_border(&widths, BOTTOM_LEFT, T_UP, BOTTOM_RIGHT);
 

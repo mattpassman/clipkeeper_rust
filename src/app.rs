@@ -310,7 +310,7 @@ impl Application {
                 anyhow::anyhow!("Failed to lock history store: {}", e)
             })?;
             store
-                .save(&event.content, &content_type)
+                .save(&event.content, content_type)
                 .with_context(|| format!("Failed to save clipboard entry (type={}, len={})", content_type, event.content.len()))?
         };
 
@@ -644,7 +644,7 @@ mod tests {
         let s = store.lock().unwrap();
         let entries = s.list(1, None, None, None).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].content_type, "url");
+        assert_eq!(entries[0].content_type, crate::content_classifier::ContentType::Url);
     }
 
     #[test]
@@ -663,7 +663,7 @@ mod tests {
         let s = store.lock().unwrap();
         let entries = s.list(1, None, None, None).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].content_type, "json");
+        assert_eq!(entries[0].content_type, crate::content_classifier::ContentType::Json);
     }
 
     #[test]
@@ -905,7 +905,7 @@ mod tests {
         let s = store.lock().unwrap();
         let entries = s.list(1, None, None, None).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].content_type, "text");
+        assert_eq!(entries[0].content_type, crate::content_classifier::ContentType::Text);
     }
 
     #[test]
