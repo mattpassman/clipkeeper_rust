@@ -4,8 +4,6 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use sysinfo::{Pid, System};
-
 use crate::errors::Result;
 use crate::history_store::HistoryStore;
 
@@ -13,12 +11,12 @@ use crate::history_store::HistoryStore;
 const MAX_METRICS_HISTORY: usize = 100;
 
 /// Default collection interval in seconds.
-const DEFAULT_INTERVAL_SECS: u64 = 60;
+const DEFAULT_INTERVAL_SECS: u64 = 300;
 
 /// A single snapshot of resource metrics.
 ///
 /// # Requirements
-/// - 15.1: Collect metrics at configurable intervals (default 60 seconds)
+/// - 15.1: Collect metrics at configurable intervals (default 300 seconds)
 /// - 15.2: Record memory usage (RSS)
 /// - 15.3: Record CPU usage percentage
 /// - 15.4: Record database size and entry count
@@ -39,13 +37,116 @@ pub struct Metrics {
 /// Shared metrics storage accessible from multiple threads.
 pub type SharedMetrics = Arc<Mutex<VecDeque<Metrics>>>;
 
+// ---------------------------------------------------------------------------
+// Lightweight /proc/self/stat reader (Linux only, no sysinfo dependency)
+// ---------------------------------------------------------------------------
+
+/// Read RSS (in bytes) and total CPU ticks from /proc/self/stat.
+/// Returns (rss_bytes, utime + stime) or zeros on failure.
+#[cfg(target_os = "linux")]
+fn read_proc_self_stat() -> (u64, u64) {
+    let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {
+        return (0, 0);
+    };
+    // Fields are space-separated. comm (field 2) may contain spaces and is
+    // wrapped in parens, so split after the closing ')'.
+    let Some(rest) = stat.rfind(')').map(|i| &stat[i + 2..]) else {
+        return (0, 0);
+    };
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // After the ')' and the space:
+    //   index 0 = state, 1 = ppid, …, 11 = utime, 12 = stime, …, 21 = rss (pages)
+    let utime: u64 = fields.get(11).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let stime: u64 = fields.get(12).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let rss_pages: u64 = fields.get(21).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+    (rss_pages * page_size, utime + stime)
+}
+
+/// Estimate CPU usage % between two snapshots.
+#[cfg(target_os = "linux")]
+fn cpu_percent_between(prev_ticks: u64, cur_ticks: u64, elapsed: Duration) -> f32 {
+    let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+    if ticks_per_sec <= 0.0 || elapsed.as_secs_f64() <= 0.0 {
+        return 0.0;
+    }
+    let delta_secs = (cur_ticks.saturating_sub(prev_ticks)) as f64 / ticks_per_sec;
+    (delta_secs / elapsed.as_secs_f64() * 100.0) as f32
+}
+
+/// Read total and available system memory from /proc/meminfo (in bytes).
+#[cfg(target_os = "linux")]
+pub fn read_meminfo() -> (u64, u64) {
+    let Ok(content) = std::fs::read_to_string("/proc/meminfo") else {
+        return (0, 0);
+    };
+    let mut total: u64 = 0;
+    let mut available: u64 = 0;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            total = parse_meminfo_kb(rest) * 1024;
+        } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            available = parse_meminfo_kb(rest) * 1024;
+        }
+        if total > 0 && available > 0 {
+            break;
+        }
+    }
+    (total, available)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_meminfo_kb(s: &str) -> u64 {
+    s.trim().trim_end_matches("kB").trim().parse().unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Non-Linux: use sysinfo crate for macOS / Windows
+// ---------------------------------------------------------------------------
+
+/// Read RSS (in bytes) and a dummy tick counter via sysinfo.
+/// The tick value is not meaningful on non-Linux, so CPU % will be
+/// derived from sysinfo's own `cpu_usage()` instead.
+#[cfg(not(target_os = "linux"))]
+fn read_proc_self_stat() -> (u64, u64) {
+    use sysinfo::{Pid, System};
+    let mut sys = System::new();
+    let pid = Pid::from_u32(std::process::id());
+    sys.refresh_process(pid);
+    let rss = sys.process(pid).map(|p| p.memory()).unwrap_or(0);
+    (rss, 0)
+}
+
+/// On non-Linux we ignore the tick-based calculation and ask sysinfo directly.
+#[cfg(not(target_os = "linux"))]
+fn cpu_percent_between(_prev: u64, _cur: u64, _elapsed: Duration) -> f32 {
+    use sysinfo::{Pid, System};
+    let mut sys = System::new();
+    let pid = Pid::from_u32(std::process::id());
+    sys.refresh_process(pid);
+    sys.process(pid).map(|p| p.cpu_usage()).unwrap_or(0.0)
+}
+
+/// Read total and available system memory via sysinfo.
+#[cfg(not(target_os = "linux"))]
+pub fn read_meminfo() -> (u64, u64) {
+    use sysinfo::System;
+    let sys = System::new_all();
+    (sys.total_memory(), sys.available_memory())
+}
+
+// ---------------------------------------------------------------------------
+// ResourceMonitor
+// ---------------------------------------------------------------------------
+
 /// ResourceMonitor tracks memory, CPU, database size, and entry count.
 ///
-/// It runs as a background thread, collecting metrics at a configurable
-/// interval and storing the last 100 samples in memory.
+/// On Linux it reads /proc/self/stat directly — no sysinfo crate needed.
+/// On macOS and Windows the sysinfo crate is pulled in automatically via
+/// `cfg(not(target_os = "linux"))` conditional compilation.
 ///
 /// # Requirements
-/// - 15.1: Collect metrics at configurable intervals (default 60 seconds)
+/// - 15.1: Collect metrics at configurable intervals (default 300 seconds)
 /// - 15.2: Record memory usage (RSS)
 /// - 15.3: Record CPU usage percentage
 /// - 15.4: Record database size and entry count
@@ -62,13 +163,7 @@ pub struct ResourceMonitor {
 }
 
 impl ResourceMonitor {
-    /// Create a new ResourceMonitor.
-    ///
-    /// # Arguments
-    /// * `history_store` - Shared history store for entry count queries
-    /// * `db_path` - Path to the SQLite database file (for size measurement)
-    /// * `metrics` - Shared metrics storage for retrieval by other components
-    /// * `shutdown_rx` - Channel receiver for shutdown signal
+    /// Create a new ResourceMonitor with the default 300s interval.
     pub fn new(
         history_store: Arc<Mutex<HistoryStore>>,
         db_path: PathBuf,
@@ -106,9 +201,6 @@ impl ResourceMonitor {
     }
 
     /// Run the resource monitor in the current thread.
-    ///
-    /// Collects metrics immediately on start, then every `interval` seconds.
-    /// Checks for shutdown signals between collection cycles.
     pub fn run(self) -> Result<()> {
         crate::log_component_action!(
             "ResourceMonitor",
@@ -116,11 +208,11 @@ impl ResourceMonitor {
             interval_secs = self.interval.as_secs()
         );
 
-        let mut sys = System::new();
-        let pid = Pid::from_u32(std::process::id());
+        let mut prev_ticks: u64 = 0;
+        let mut prev_instant = std::time::Instant::now();
 
         // Collect initial metrics
-        self.collect_and_store(&mut sys, pid);
+        self.collect_and_store(&mut prev_ticks, &mut prev_instant);
 
         loop {
             // Sleep in 1-second chunks so we can respond to shutdown quickly
@@ -139,16 +231,15 @@ impl ResourceMonitor {
                 thread::sleep(Duration::from_secs(1));
             }
 
-            // Collect metrics after the interval
-            self.collect_and_store(&mut sys, pid);
+            self.collect_and_store(&mut prev_ticks, &mut prev_instant);
         }
     }
 
     /// Collect a single metrics snapshot and store it.
-    fn collect_and_store(&self, sys: &mut System, pid: Pid) {
-        match self.collect_metrics(sys, pid) {
+    fn collect_and_store(&self, prev_ticks: &mut u64, prev_instant: &mut std::time::Instant) {
+        match self.collect_metrics(prev_ticks, prev_instant) {
             Ok(metrics) => {
-                // Write to metrics log file (like JS version)
+                // Write to metrics log file
                 if let Some(ref metrics_path) = self.metrics_path {
                     let uptime_secs = self.start_time.elapsed().as_secs();
                     let datetime = chrono::Utc::now().to_rfc3339();
@@ -189,7 +280,6 @@ impl ResourceMonitor {
                     }
                 };
 
-                // Maintain max history size
                 if history.len() >= MAX_METRICS_HISTORY {
                     history.pop_front();
                 }
@@ -206,22 +296,24 @@ impl ResourceMonitor {
     }
 
     /// Collect current resource metrics.
-    fn collect_metrics(&self, sys: &mut System, pid: Pid) -> Result<Metrics> {
-        // Refresh process-specific information
-        sys.refresh_process(pid);
+    fn collect_metrics(
+        &self,
+        prev_ticks: &mut u64,
+        prev_instant: &mut std::time::Instant,
+    ) -> Result<Metrics> {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(*prev_instant);
 
-        let (memory_rss_bytes, cpu_usage_percent) = if let Some(process) = sys.process(pid) {
-            (process.memory(), process.cpu_usage())
-        } else {
-            (0, 0.0)
-        };
+        let (rss_bytes, cur_ticks) = read_proc_self_stat();
+        let cpu = cpu_percent_between(*prev_ticks, cur_ticks, elapsed);
 
-        // Get database file size
+        *prev_ticks = cur_ticks;
+        *prev_instant = now;
+
         let database_size_bytes = std::fs::metadata(&self.db_path)
             .map(|m| m.len())
             .unwrap_or(0);
 
-        // Get entry count from history store
         let entry_count = match self.history_store.lock() {
             Ok(store) => store.get_statistics().map(|s| s.total).unwrap_or(0),
             Err(_) => 0,
@@ -231,18 +323,19 @@ impl ResourceMonitor {
 
         Ok(Metrics {
             timestamp,
-            memory_rss_bytes,
-            cpu_usage_percent,
+            memory_rss_bytes: rss_bytes,
+            cpu_usage_percent: cpu,
             database_size_bytes,
             entry_count,
         })
     }
 }
 
+// ---------------------------------------------------------------------------
+// Public helpers
+// ---------------------------------------------------------------------------
+
 /// Get the current (most recent) metrics snapshot.
-///
-/// # Requirements
-/// - 15.5: Display current resource usage statistics
 pub fn get_current_metrics(metrics: &SharedMetrics) -> Option<Metrics> {
     metrics
         .lock()
@@ -251,9 +344,6 @@ pub fn get_current_metrics(metrics: &SharedMetrics) -> Option<Metrics> {
 }
 
 /// Get the full metrics history (up to the last 100 samples).
-///
-/// # Requirements
-/// - 15.1-15.5: Metrics collection and retrieval
 pub fn get_metrics_history(metrics: &SharedMetrics) -> Vec<Metrics> {
     metrics
         .lock()
@@ -267,15 +357,6 @@ pub fn new_shared_metrics() -> SharedMetrics {
 }
 
 /// Spawn the resource monitor as a background thread.
-///
-/// # Arguments
-/// * `history_store` - Shared history store
-/// * `db_path` - Path to the database file
-/// * `metrics` - Shared metrics storage
-/// * `shutdown_rx` - Channel receiver for shutdown signal
-///
-/// # Returns
-/// A JoinHandle for the spawned thread.
 pub fn spawn_resource_monitor(
     history_store: Arc<Mutex<HistoryStore>>,
     db_path: PathBuf,
@@ -293,6 +374,10 @@ pub fn spawn_resource_monitor(
         }
     })
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -396,7 +481,6 @@ mod tests {
 
         let history = get_metrics_history(&metrics);
         assert_eq!(history.len(), MAX_METRICS_HISTORY);
-        // Should contain the last 100 samples (50..150)
         assert_eq!(history[0].timestamp, 50 * 1000);
         assert_eq!(history[99].timestamp, 149 * 1000);
     }
@@ -447,7 +531,6 @@ mod tests {
         let store = create_test_store(temp_dir.path());
         let db_path = temp_dir.path().join("test.db");
 
-        // Save some entries so entry_count > 0
         store.save("hello world", "text").unwrap();
         store.save("https://example.com", "url").unwrap();
 
@@ -455,20 +538,13 @@ mod tests {
         let metrics = new_shared_metrics();
         let (_tx, rx) = mpsc::channel();
 
-        let monitor = ResourceMonitor::new(
-            shared_store,
-            db_path,
-            metrics,
-            rx,
-        );
+        let monitor = ResourceMonitor::new(shared_store, db_path, metrics, rx);
 
-        let mut sys = System::new();
-        let pid = Pid::from_u32(std::process::id());
-        let result = monitor.collect_metrics(&mut sys, pid).unwrap();
+        let mut prev_ticks: u64 = 0;
+        let mut prev_instant = std::time::Instant::now();
+        let result = monitor.collect_metrics(&mut prev_ticks, &mut prev_instant).unwrap();
 
         assert!(result.timestamp > 0);
-        // RSS should be non-zero for a running process
-        // (may be 0 on some CI environments, so we just check it doesn't error)
         assert!(result.database_size_bytes > 0);
         assert_eq!(result.entry_count, 2);
     }
@@ -482,17 +558,11 @@ mod tests {
         let metrics = new_shared_metrics();
         let (_tx, rx) = mpsc::channel();
 
-        let monitor = ResourceMonitor::new(
-            shared_store,
-            db_path,
-            Arc::clone(&metrics),
-            rx,
-        );
+        let monitor = ResourceMonitor::new(shared_store, db_path, Arc::clone(&metrics), rx);
 
-        let mut sys = System::new();
-        let pid = Pid::from_u32(std::process::id());
-
-        monitor.collect_and_store(&mut sys, pid);
+        let mut prev_ticks: u64 = 0;
+        let mut prev_instant = std::time::Instant::now();
+        monitor.collect_and_store(&mut prev_ticks, &mut prev_instant);
 
         let history = get_metrics_history(&metrics);
         assert_eq!(history.len(), 1);
@@ -515,16 +585,10 @@ mod tests {
             rx,
         );
 
-        // Give it a moment to start and collect initial metrics
         thread::sleep(Duration::from_millis(200));
-
-        // Send shutdown signal
         tx.send(()).unwrap();
-
-        // Thread should exit promptly
         handle.join().expect("Resource monitor thread panicked");
 
-        // Should have at least the initial metrics sample
         let history = get_metrics_history(&metrics);
         assert!(!history.is_empty(), "Should have collected at least one sample");
     }
@@ -545,13 +609,8 @@ mod tests {
             rx,
         );
 
-        // Give it a moment to start
         thread::sleep(Duration::from_millis(200));
-
-        // Drop the sender - this disconnects the channel and triggers shutdown
         drop(tx);
-
-        // Thread should exit promptly
         handle.join().expect("Resource monitor thread panicked");
     }
 
@@ -564,18 +623,31 @@ mod tests {
         let metrics = new_shared_metrics();
         let (_tx, rx) = mpsc::channel();
 
-        let monitor = ResourceMonitor::new(
-            shared_store,
-            nonexistent_path,
-            metrics,
-            rx,
-        );
+        let monitor = ResourceMonitor::new(shared_store, nonexistent_path, metrics, rx);
 
-        let mut sys = System::new();
-        let pid = Pid::from_u32(std::process::id());
-        let result = monitor.collect_metrics(&mut sys, pid).unwrap();
+        let mut prev_ticks: u64 = 0;
+        let mut prev_instant = std::time::Instant::now();
+        let result = monitor.collect_metrics(&mut prev_ticks, &mut prev_instant).unwrap();
 
-        // Should gracefully return 0 for nonexistent file
         assert_eq!(result.database_size_bytes, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_read_proc_self_stat() {
+        let (rss, ticks) = read_proc_self_stat();
+        // A running process should have non-zero RSS
+        assert!(rss > 0, "RSS should be non-zero on Linux");
+        // ticks may be very small for a short-lived test, but should not panic
+        let _ = ticks;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_read_meminfo() {
+        let (total, available) = read_meminfo();
+        assert!(total > 0, "Total memory should be non-zero");
+        assert!(available > 0, "Available memory should be non-zero");
+        assert!(available <= total, "Available should not exceed total");
     }
 }

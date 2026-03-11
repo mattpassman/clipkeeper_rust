@@ -566,9 +566,9 @@ pub fn handle_metrics(_history: bool, limit: usize, clear: bool) -> Result<()> {
                 println!("\nSystem:");
                 println!("  Platform:      {}", std::env::consts::OS);
                 println!("  Architecture:  {}", std::env::consts::ARCH);
-                let sys = sysinfo::System::new_all();
-                println!("  Total Memory:  {} MB", sys.total_memory() / 1024 / 1024);
-                println!("  Free Memory:   {} MB", sys.available_memory() / 1024 / 1024);
+                let (total_mem, avail_mem) = crate::resource_monitor::read_meminfo();
+                println!("  Total Memory:  {} MB", total_mem / 1024 / 1024);
+                println!("  Free Memory:   {} MB", avail_mem / 1024 / 1024);
 
                 // Database
                 if let Some(db_size) = latest.get("database_size_kb") {
@@ -581,25 +581,17 @@ pub fn handle_metrics(_history: bool, limit: usize, clear: bool) -> Result<()> {
 
                 println!("\n{}", "═".repeat(60));
                 println!("\nMetrics file: {}", metrics_path.display());
-                println!("Sampling interval: Every 60 seconds");
+                println!("Sampling interval: Every 300 seconds");
                 println!("Use --limit to show more samples, or --clear to reset metrics");
                 return Ok(());
             }
         }
     }
 
-    // Fallback: show live metrics if no metrics file
+    // Fallback: show live snapshot if no metrics file
     let store = HistoryStore::new(&config.storage.get_db_path())
         .context("Failed to open database")?;
     let stats = store.get_statistics().context("Failed to get statistics")?;
-    let sys = sysinfo::System::new_all();
-    let pid = sysinfo::get_current_pid().ok();
-    let (mem_mb, cpu) = pid
-        .and_then(|p| sys.process(p))
-        .map(|proc| {
-            (proc.memory() as f64 / 1024.0 / 1024.0, proc.cpu_usage())
-        })
-        .unwrap_or((0.0, 0.0));
 
     let db_path = config.storage.get_db_path();
     let db_size = std::fs::metadata(&db_path)
@@ -610,8 +602,6 @@ pub fn handle_metrics(_history: bool, limit: usize, clear: bool) -> Result<()> {
     println!("Start the service with --monitor flag to collect metrics:");
     println!("  clipkeeper start --monitor\n");
     println!("Current snapshot:");
-    println!("  Memory:       {:.1} MB", mem_mb);
-    println!("  CPU:          {:.1}%", cpu);
     println!("  Database:     {:.1} KB", db_size);
     println!("  Entries:      {}", stats.total);
 

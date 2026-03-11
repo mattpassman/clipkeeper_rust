@@ -38,10 +38,10 @@ clipkeeper list --format json
 # Search with type filter
 clipkeeper search "function" --content-type code
 
-# Run in foreground with monitoring
+# Run in foreground with resource monitoring (sampled every 5 min)
 clipkeeper start --monitor
 
-# View metrics
+# View metrics (requires --monitor to be active)
 clipkeeper metrics
 
 # Clear history (with confirmation)
