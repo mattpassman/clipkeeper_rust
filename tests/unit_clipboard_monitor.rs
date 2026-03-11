@@ -360,7 +360,7 @@ fn test_event_emission_through_channel() {
     
     // Simulate clipboard change event
     let content = "Test clipboard content".to_string();
-    let timestamp = chrono::Utc::now().timestamp_millis();
+    let timestamp = clipkeeper::time_utils::now_millis();
     
     let event = ClipboardEvent {
         content: content.clone(),
@@ -382,7 +382,7 @@ fn test_event_contains_content_and_timestamp() {
     // Test that events contain both content and timestamp
     // This test verifies Requirement 1.3: event includes content and timestamp
     
-    let before = chrono::Utc::now().timestamp_millis();
+    let before = clipkeeper::time_utils::now_millis();
     
     #[derive(Debug, Clone)]
     struct ClipboardEvent {
@@ -392,10 +392,10 @@ fn test_event_contains_content_and_timestamp() {
     
     let event = ClipboardEvent {
         content: "Test content".to_string(),
-        timestamp: chrono::Utc::now().timestamp_millis(),
+        timestamp: clipkeeper::time_utils::now_millis(),
     };
     
-    let after = chrono::Utc::now().timestamp_millis();
+    let after = clipkeeper::time_utils::now_millis();
     
     // Verify content
     assert_eq!(event.content, "Test content");
@@ -492,7 +492,7 @@ fn test_logging_on_clipboard_change() {
     
     let event = ClipboardEvent {
         content: "Test content for logging".to_string(),
-        timestamp: chrono::Utc::now().timestamp_millis(),
+        timestamp: clipkeeper::time_utils::now_millis(),
     };
     
     // Verify event has all info needed for logging

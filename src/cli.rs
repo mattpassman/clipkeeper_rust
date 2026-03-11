@@ -118,7 +118,7 @@ const CHECK: &str = "✓";
 const CROSS_MARK: &str = "✗";
 
 fn format_relative_time(timestamp_ms: i64) -> String {
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = crate::time_utils::now_millis();
     let diff_secs = (now - timestamp_ms) / 1000;
     if diff_secs < 60 { return "Just now".to_string(); }
     if diff_secs < 3600 { return format!("{} mins ago", diff_secs / 60); }
@@ -254,7 +254,7 @@ pub fn handle_status() -> Result<()> {
     let last_activity = store.list(1, None, None, None)
         .ok()
         .and_then(|entries| entries.first().map(|e| {
-            let now = chrono::Utc::now().timestamp_millis();
+            let now = crate::time_utils::now_millis();
             let diff_ms = now - e.timestamp;
             if diff_ms < 60_000 {
                 "Just now".to_string()

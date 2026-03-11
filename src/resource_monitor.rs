@@ -252,7 +252,7 @@ impl ResourceMonitor {
                 // Write to metrics log file
                 if let Some(ref metrics_path) = self.metrics_path {
                     let uptime_secs = self.start_time.elapsed().as_secs();
-                    let datetime = chrono::Utc::now().to_rfc3339();
+                    let datetime = crate::time_utils::millis_to_rfc3339(crate::time_utils::now_millis());
                     let log_entry = serde_json::json!({
                         "timestamp": metrics.timestamp,
                         "datetime": datetime,
@@ -326,7 +326,7 @@ impl ResourceMonitor {
 
         let entry_count = self.entry_count.load(Ordering::Relaxed);
 
-        let timestamp = chrono::Utc::now().timestamp_millis();
+        let timestamp = crate::time_utils::now_millis();
 
         Ok(Metrics {
             timestamp,

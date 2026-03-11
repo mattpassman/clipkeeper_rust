@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use chrono::Utc;
+use crate::time_utils;
 use crate::content_classifier::ContentType;
 use crate::errors::{Context, Result, DatabaseError};
 
@@ -442,7 +442,7 @@ impl HistoryStore {
         self.check_open()?;
         
         let id = uuid::Uuid::new_v4();
-        let timestamp = Utc::now().timestamp_millis();
+        let timestamp = time_utils::now_millis();
         
         // Calculate metadata
         let character_count = content.chars().count();
@@ -459,7 +459,7 @@ impl HistoryStore {
         let metadata_json = serde_json::to_string(&metadata)
             .context("Failed to serialize metadata: {}")?;
         
-        let created_at = Utc::now().timestamp_millis();
+        let created_at = time_utils::now_millis();
         
         // Try INSERT with created_at first (JS schema compatibility),
         // fall back to without if column doesn't exist
@@ -791,7 +791,7 @@ impl HistoryStore {
     pub fn cleanup_old_entries(&self, days: u32) -> Result<usize> {
         self.check_open()?;
         
-        let cutoff = Utc::now().timestamp_millis() - (days as i64 * 24 * 60 * 60 * 1000);
+        let cutoff = time_utils::now_millis() - (days as i64 * 24 * 60 * 60 * 1000);
         
         let deleted = self.conn.execute(
             "DELETE FROM clipboard_entries WHERE timestamp < ?1",
@@ -832,7 +832,7 @@ impl HistoryStore {
     ///
     /// ```ignore
     /// // Get entries from the last hour
-    /// let one_hour_ago = Utc::now().timestamp_millis() - (60 * 60 * 1000);
+    /// let one_hour_ago = time_utils::now_millis() - (60 * 60 * 1000);
     /// let entries = store.get_since(one_hour_ago, 100)?;
     /// ```
     pub fn get_since(&self, timestamp: i64, limit: usize) -> Result<Vec<ClipboardEntry>> {
@@ -1015,8 +1015,7 @@ impl HistoryStore {
         let created_at: i64 = row.get::<_, i64>(6)
             .or_else(|_| {
                 row.get::<_, String>(6).map(|s| {
-                    chrono::DateTime::parse_from_rfc3339(&s)
-                        .map(|dt| dt.timestamp_millis())
+                    time_utils::parse_rfc3339_to_millis(&s)
                         .unwrap_or(timestamp)
                 })
             })
@@ -1038,18 +1037,14 @@ impl HistoryStore {
 fn parse_since(since: &str) -> Result<i64> {
     match since {
         "today" => {
-            let now = Utc::now();
-            let today = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
-            Ok(today.and_utc().timestamp_millis())
+            Ok(time_utils::today_start_millis())
         }
         "yesterday" => {
-            let now = Utc::now();
-            let yesterday = now.date_naive().pred_opt().unwrap().and_hms_opt(0, 0, 0).unwrap();
-            Ok(yesterday.and_utc().timestamp_millis())
+            Ok(time_utils::yesterday_start_millis())
         }
         _ => {
             if let Ok(days) = since.trim_end_matches(" days ago").parse::<i64>() {
-                let cutoff = Utc::now().timestamp_millis() - (days * 24 * 60 * 60 * 1000);
+                let cutoff = time_utils::now_millis() - (days * 24 * 60 * 60 * 1000);
                 Ok(cutoff)
             } else {
                 anyhow::bail!("Invalid since format: {}", since)
@@ -1491,7 +1486,7 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
 
         // Save entries with different timestamps
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let one_hour_ago = now - (60 * 60 * 1000);
         let two_hours_ago = now - (2 * 60 * 60 * 1000);
         let three_hours_ago = now - (3 * 60 * 60 * 1000);
@@ -1694,7 +1689,7 @@ mod tests {
         store.conn.execute(
             "INSERT INTO clipboard_entries (id, content, content_type, timestamp, source_app, metadata)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, "test content", "text", Utc::now().timestamp_millis(), None::<String>, None::<String>],
+            params![id, "test content", "text", time_utils::now_millis(), None::<String>, None::<String>],
         ).unwrap();
 
         // Retrieve the entry - should get default metadata
@@ -1716,7 +1711,7 @@ mod tests {
         store.conn.execute(
             "INSERT INTO clipboard_entries (id, content, content_type, timestamp, source_app, metadata)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, "test content", "text", Utc::now().timestamp_millis(), None::<String>, "invalid json"],
+            params![id, "test content", "text", time_utils::now_millis(), None::<String>, "invalid json"],
         ).unwrap();
 
         // Retrieve the entry - should get default metadata and log a warning

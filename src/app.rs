@@ -557,7 +557,7 @@ mod tests {
 
         let event = ClipboardEvent {
             content: "Hello, world!".to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_utils::now_millis(),
         };
 
         let result = app.handle_clipboard_event(event);
@@ -597,7 +597,7 @@ mod tests {
         // With privacy disabled, even sensitive content should be saved
         let event = ClipboardEvent {
             content: "Bearer eyJhbGciOiJIUzI1NiJ9".to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_utils::now_millis(),
         };
 
         let result = app.handle_clipboard_event(event);
@@ -617,7 +617,7 @@ mod tests {
         // Even sensitive-looking content should be saved when privacy is disabled
         let event = ClipboardEvent {
             content: "Bearer eyJhbGciOiJIUzI1NiJ9".to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_utils::now_millis(),
         };
 
         let result = app.handle_clipboard_event(event);
@@ -635,7 +635,7 @@ mod tests {
 
         let event = ClipboardEvent {
             content: "https://example.com/path".to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_utils::now_millis(),
         };
 
         let result = app.handle_clipboard_event(event);
@@ -654,7 +654,7 @@ mod tests {
 
         let event = ClipboardEvent {
             content: r#"{"key": "value", "number": 42}"#.to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_utils::now_millis(),
         };
 
         let result = app.handle_clipboard_event(event);
@@ -744,7 +744,7 @@ mod tests {
         for i in 0..5 {
             let event = ClipboardEvent {
                 content: format!("Content item {}", i),
-                timestamp: chrono::Utc::now().timestamp_millis() + i as i64,
+                timestamp: crate::time_utils::now_millis() + i as i64,
             };
             let result = app.handle_clipboard_event(event);
             assert!(result.is_ok());
@@ -763,13 +763,13 @@ mod tests {
 
         let event = ClipboardEvent {
             content: "Normal content".to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_utils::now_millis(),
         };
         assert!(app.handle_clipboard_event(event).is_ok());
 
         let event2 = ClipboardEvent {
             content: "More content".to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_utils::now_millis(),
         };
         assert!(app.handle_clipboard_event(event2).is_ok());
     }
@@ -896,7 +896,7 @@ mod tests {
 
         let event = ClipboardEvent {
             content: "Just some plain text content".to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_utils::now_millis(),
         };
 
         let result = app.handle_clipboard_event(event);

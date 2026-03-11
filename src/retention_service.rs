@@ -263,7 +263,7 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
 
         // Insert an old entry (100 days ago) directly via SQL
-        let old_timestamp = chrono::Utc::now().timestamp_millis() - (100 * 24 * 60 * 60 * 1000);
+        let old_timestamp = crate::time_utils::now_millis() - (100 * 24 * 60 * 60 * 1000);
         insert_entry_with_timestamp(&db_path, "old entry", old_timestamp);
 
         // Insert a recent entry via the normal API
@@ -289,7 +289,7 @@ mod tests {
         let store = HistoryStore::new(&db_path).unwrap();
 
         // Insert entries that are within the retention period (5 days ago, retention = 30)
-        let recent_timestamp = chrono::Utc::now().timestamp_millis() - (5 * 24 * 60 * 60 * 1000);
+        let recent_timestamp = crate::time_utils::now_millis() - (5 * 24 * 60 * 60 * 1000);
         insert_entry_with_timestamp(&db_path, "recent enough", recent_timestamp);
         store.save("brand new", ContentType::Text).unwrap();
 

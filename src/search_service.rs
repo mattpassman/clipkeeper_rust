@@ -1,7 +1,7 @@
 use crate::content_classifier::ContentType;
 use crate::errors::Result;
 use crate::history_store::{ClipboardEntry, SharedHistoryStore};
-use chrono::{DateTime, Utc};
+use crate::time_utils;
 use serde::{Deserialize, Serialize};
 
 /// SearchService coordinates search operations with filtering and result formatting
@@ -121,7 +121,7 @@ impl SearchService {
     /// - Requirement 5.5: Use "Just now" for <1 min, "N min(s) ago" for <1 hour,
     ///   "N hour(s) ago" for <24 hours, "N day(s) ago" for <7 days, and absolute format for older
     pub fn format_relative_time(timestamp: i64) -> String {
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let diff_ms = now - timestamp;
         let diff_secs = diff_ms / 1000;
 
@@ -150,9 +150,7 @@ impl SearchService {
             }
         } else {
             // For older entries, use absolute format
-            let dt = DateTime::from_timestamp_millis(timestamp)
-                .unwrap_or_else(|| Utc::now());
-            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+            time_utils::millis_to_datetime(timestamp)
         }
     }
 }
@@ -201,56 +199,56 @@ mod tests {
 
     #[test]
     fn test_format_relative_time_just_now() {
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let result = SearchService::format_relative_time(now - 30_000); // 30 seconds ago
         assert_eq!(result, "Just now");
     }
 
     #[test]
     fn test_format_relative_time_minutes() {
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let result = SearchService::format_relative_time(now - 120_000); // 2 minutes ago
         assert_eq!(result, "2 mins ago");
     }
 
     #[test]
     fn test_format_relative_time_one_minute() {
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let result = SearchService::format_relative_time(now - 60_000); // 1 minute ago
         assert_eq!(result, "1 min ago");
     }
 
     #[test]
     fn test_format_relative_time_hours() {
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let result = SearchService::format_relative_time(now - 7_200_000); // 2 hours ago
         assert_eq!(result, "2 hours ago");
     }
 
     #[test]
     fn test_format_relative_time_one_hour() {
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let result = SearchService::format_relative_time(now - 3_600_000); // 1 hour ago
         assert_eq!(result, "1 hour ago");
     }
 
     #[test]
     fn test_format_relative_time_days() {
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let result = SearchService::format_relative_time(now - 172_800_000); // 2 days ago
         assert_eq!(result, "2 days ago");
     }
 
     #[test]
     fn test_format_relative_time_one_day() {
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let result = SearchService::format_relative_time(now - 86_400_000); // 1 day ago
         assert_eq!(result, "1 day ago");
     }
 
     #[test]
     fn test_format_relative_time_absolute() {
-        let now = Utc::now().timestamp_millis();
+        let now = time_utils::now_millis();
         let result = SearchService::format_relative_time(now - 604_800_000); // 7 days ago
         // Should be in absolute format YYYY-MM-DD HH:MM:SS
         assert!(result.contains("-"));

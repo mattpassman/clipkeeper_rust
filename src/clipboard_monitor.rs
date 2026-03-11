@@ -138,7 +138,7 @@ impl ClipboardMonitor {
             
             let event = ClipboardEvent {
                 content,
-                timestamp: chrono::Utc::now().timestamp_millis(),
+                timestamp: crate::time_utils::now_millis(),
             };
             
             Ok(Some(event))
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn test_clipboard_event_creation() {
         let content = "Test content".to_string();
-        let timestamp = chrono::Utc::now().timestamp_millis();
+        let timestamp = crate::time_utils::now_millis();
         
         let event = ClipboardEvent {
             content: content.clone(),
@@ -331,14 +331,14 @@ mod tests {
 
     #[test]
     fn test_clipboard_event_timestamp() {
-        let before = chrono::Utc::now().timestamp_millis();
+        let before = crate::time_utils::now_millis();
         
         let event = ClipboardEvent {
             content: "Test".to_string(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_utils::now_millis(),
         };
         
-        let after = chrono::Utc::now().timestamp_millis();
+        let after = crate::time_utils::now_millis();
 
         // Timestamp should be between before and after
         assert!(event.timestamp >= before);

@@ -114,9 +114,7 @@ fn test_search_service_parse_query() {
 
 #[test]
 fn test_search_service_format_relative_time() {
-    use chrono::Utc;
-    
-    let now = Utc::now().timestamp_millis();
+    let now = clipkeeper::time_utils::now_millis();
     
     // Just now
     assert_eq!(SearchService::format_relative_time(now - 30_000), "Just now");
