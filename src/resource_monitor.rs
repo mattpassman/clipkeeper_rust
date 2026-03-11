@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -154,7 +155,7 @@ pub fn read_meminfo() -> (u64, u64) {
 /// - 15.6: Cease all metrics collection on stop
 pub struct ResourceMonitor {
     interval: Duration,
-    history_store: Arc<Mutex<HistoryStore>>,
+    entry_count: Arc<AtomicUsize>,
     db_path: PathBuf,
     metrics_path: Option<PathBuf>,
     metrics: SharedMetrics,
@@ -170,9 +171,12 @@ impl ResourceMonitor {
         metrics: SharedMetrics,
         shutdown_rx: mpsc::Receiver<()>,
     ) -> Self {
+        let entry_count = history_store.lock()
+            .map(|s| s.entry_count_handle())
+            .unwrap_or_else(|_| Arc::new(AtomicUsize::new(0)));
         Self {
             interval: Duration::from_secs(DEFAULT_INTERVAL_SECS),
-            history_store,
+            entry_count,
             db_path: db_path.clone(),
             metrics_path: db_path.parent().map(|p| p.join("metrics.log")),
             metrics,
@@ -189,9 +193,12 @@ impl ResourceMonitor {
         shutdown_rx: mpsc::Receiver<()>,
         interval: Duration,
     ) -> Self {
+        let entry_count = history_store.lock()
+            .map(|s| s.entry_count_handle())
+            .unwrap_or_else(|_| Arc::new(AtomicUsize::new(0)));
         Self {
             interval,
-            history_store,
+            entry_count,
             db_path: db_path.clone(),
             metrics_path: db_path.parent().map(|p| p.join("metrics.log")),
             metrics,
@@ -314,10 +321,7 @@ impl ResourceMonitor {
             .map(|m| m.len())
             .unwrap_or(0);
 
-        let entry_count = match self.history_store.lock() {
-            Ok(store) => store.get_statistics().map(|s| s.total).unwrap_or(0),
-            Err(_) => 0,
-        };
+        let entry_count = self.entry_count.load(Ordering::Relaxed);
 
         let timestamp = chrono::Utc::now().timestamp_millis();
 

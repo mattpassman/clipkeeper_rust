@@ -1,6 +1,7 @@
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use chrono::Utc;
 use crate::errors::{Context, Result, DatabaseError};
@@ -45,6 +46,10 @@ pub struct Statistics {
 pub struct HistoryStore {
     conn: Connection,
     fts_available: bool,
+    /// Cached entry count updated atomically on save/delete/clear.
+    /// Wrapped in Arc so it can be shared with ResourceMonitor without
+    /// requiring the caller to lock the HistoryStore mutex.
+    entry_count: Arc<AtomicUsize>,
 }
 
 /// Thread-safe wrapper for HistoryStore
@@ -156,7 +161,14 @@ impl HistoryStore {
             fts_available = fts_available
         );
         
-        Ok(Self { conn, fts_available })
+        // Seed the cached entry count from the database
+        let initial_count: usize = conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_entries",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+
+        Ok(Self { conn, fts_available, entry_count: Arc::new(AtomicUsize::new(initial_count)) })
     }
     
     /// Check if FTS5 is available in this SQLite build
@@ -480,6 +492,7 @@ impl HistoryStore {
             word_count = word_count
         );
         
+        self.entry_count.fetch_add(1, Ordering::Relaxed);
         Ok(id)
     }
     
@@ -726,6 +739,8 @@ impl HistoryStore {
         self.conn.execute("DELETE FROM clipboard_entries", [])
             .context("Failed to clear entries: {}")?;
         
+        self.entry_count.store(0, Ordering::Relaxed);
+
         crate::log_component_action!(
             "HistoryStore",
             "All entries cleared",
@@ -783,6 +798,11 @@ impl HistoryStore {
         )
         .context("Failed to cleanup entries: {}")?;
         
+        // Saturating subtract to avoid wrapping if the count ever drifts
+        self.entry_count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_sub(deleted))
+        }).ok();
+
         crate::log_component_action!(
             "HistoryStore",
             "Old entries cleaned up",
@@ -919,6 +939,25 @@ impl HistoryStore {
         // but we can test if the connection is usable by executing a simple query
         // Use query_row instead of execute to avoid any potential side effects
         self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
+    }
+
+    /// Return the cached entry count without hitting the database.
+    ///
+    /// This is a lock-free read of an `AtomicUsize` that is kept in sync
+    /// by `save`, `clear`, and `cleanup_old_entries`.  It is intended for
+    /// hot paths such as `ResourceMonitor::collect_metrics` where acquiring
+    /// the `Mutex<HistoryStore>` just to run `SELECT COUNT(*)` would cause
+    /// unnecessary contention.
+    pub fn entry_count(&self) -> usize {
+        self.entry_count.load(Ordering::Relaxed)
+    }
+
+    /// Return a shared handle to the atomic entry count.
+    ///
+    /// This allows external components (e.g. `ResourceMonitor`) to read the
+    /// count without acquiring the `HistoryStore` mutex.
+    pub fn entry_count_handle(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.entry_count)
     }
     /// Check if database is open and return an error if not
     ///
