@@ -13,7 +13,7 @@ fn test_validate_retention_days_non_negative() {
             custom_patterns: vec![],
         },
         retention: RetentionConfig { days: 0 }, // 0 is valid (unlimited retention)
-        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true },
+        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true, max_metrics_log_kb: 1024 },
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/test"),
             db_path: None,
@@ -38,7 +38,7 @@ fn test_validate_poll_interval_positive() {
             custom_patterns: vec![],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 0, auto_start: false, enabled: true }, // Invalid: must be > 0
+        monitoring: MonitoringConfig { poll_interval: 0, auto_start: false, enabled: true, max_metrics_log_kb: 1024 }, // Invalid: must be > 0
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/test"),
             db_path: None,
@@ -62,7 +62,7 @@ fn test_validate_poll_interval_valid() {
             custom_patterns: vec![],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true }, // Valid
+        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true, max_metrics_log_kb: 1024 }, // Valid
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/test"),
             db_path: None,
@@ -112,7 +112,7 @@ fn test_validate_data_dir_absolute_path() {
             custom_patterns: vec![],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true },
+        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true, max_metrics_log_kb: 1024 },
         storage: StorageConfig {
             data_dir: PathBuf::from("relative/path"), // Invalid: not absolute
             db_path: None,
@@ -137,7 +137,7 @@ fn test_validate_data_dir_valid() {
             custom_patterns: vec![],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true },
+        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true, max_metrics_log_kb: 1024 },
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/test"), // Valid: absolute
             db_path: None,
@@ -162,7 +162,7 @@ fn test_validate_returns_all_errors() {
             custom_patterns: vec![],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 0, auto_start: false, enabled: true }, // Error 1: must be > 0
+        monitoring: MonitoringConfig { poll_interval: 0, auto_start: false, enabled: true, max_metrics_log_kb: 1024 }, // Error 1: must be > 0
         storage: StorageConfig {
             data_dir: PathBuf::from("relative/path"), // Error 2: must be absolute
             db_path: Some(PathBuf::from("relative/db.db")), // Error 3: must be absolute

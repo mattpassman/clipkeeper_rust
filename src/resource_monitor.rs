@@ -17,6 +17,9 @@ const MAX_METRICS_HISTORY: usize = 100;
 /// Default collection interval in seconds.
 const DEFAULT_INTERVAL_SECS: u64 = 300;
 
+/// Default maximum metrics log file size in bytes (1 MB).
+const DEFAULT_MAX_LOG_BYTES: u64 = 1024 * 1024;
+
 /// A single snapshot of resource metrics.
 ///
 /// # Requirements
@@ -161,6 +164,7 @@ pub struct ResourceMonitor {
     entry_count: Arc<AtomicUsize>,
     db_path: PathBuf,
     metrics_path: Option<PathBuf>,
+    max_log_bytes: u64,
     metrics: SharedMetrics,
     shutdown_rx: mpsc::Receiver<()>,
     start_time: std::time::Instant,
@@ -182,6 +186,7 @@ impl ResourceMonitor {
             entry_count,
             db_path: db_path.clone(),
             metrics_path: db_path.parent().map(|p| p.join("metrics.log")),
+            max_log_bytes: DEFAULT_MAX_LOG_BYTES,
             metrics,
             shutdown_rx,
             start_time: std::time::Instant::now(),
@@ -204,6 +209,7 @@ impl ResourceMonitor {
             entry_count,
             db_path: db_path.clone(),
             metrics_path: db_path.parent().map(|p| p.join("metrics.log")),
+            max_log_bytes: DEFAULT_MAX_LOG_BYTES,
             metrics,
             shutdown_rx,
             start_time: std::time::Instant::now(),
@@ -251,6 +257,9 @@ impl ResourceMonitor {
             Ok(metrics) => {
                 // Write to metrics log file
                 if let Some(ref metrics_path) = self.metrics_path {
+                    // Rotate if the log exceeds the configured max size
+                    self.rotate_metrics_log(metrics_path);
+
                     let uptime_secs = self.start_time.elapsed().as_secs();
                     let datetime = crate::time_utils::millis_to_rfc3339(crate::time_utils::now_millis());
                     let log_entry = serde_json::json!({
@@ -303,6 +312,39 @@ impl ResourceMonitor {
                 );
             }
         }
+    }
+
+    /// Rotate the metrics log file if it exceeds `max_log_bytes`.
+    ///
+    /// Keeps the most recent half of the lines so we don't lose all history.
+    fn rotate_metrics_log(&self, path: &std::path::Path) {
+        let size = match std::fs::metadata(path) {
+            Ok(m) => m.len(),
+            Err(_) => return, // file doesn't exist yet, nothing to rotate
+        };
+        if size <= self.max_log_bytes {
+            return;
+        }
+
+        tracing::info!(
+            component = "ResourceMonitor",
+            size_bytes = size,
+            max_bytes = self.max_log_bytes,
+            "Rotating metrics log"
+        );
+
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        // Keep the most recent half
+        let keep_from = lines.len() / 2;
+        let kept: String = lines[keep_from..]
+            .iter()
+            .map(|l| format!("{}\n", l))
+            .collect();
+        let _ = std::fs::write(path, kept);
     }
 
     /// Collect current resource metrics.
@@ -370,8 +412,20 @@ pub fn spawn_resource_monitor(
     metrics: SharedMetrics,
     shutdown_rx: mpsc::Receiver<()>,
 ) -> JoinHandle<()> {
+    spawn_resource_monitor_with_max_log(history_store, db_path, metrics, shutdown_rx, DEFAULT_MAX_LOG_BYTES)
+}
+
+/// Spawn the resource monitor with a custom max metrics log size.
+pub fn spawn_resource_monitor_with_max_log(
+    history_store: Arc<Mutex<HistoryStore>>,
+    db_path: PathBuf,
+    metrics: SharedMetrics,
+    shutdown_rx: mpsc::Receiver<()>,
+    max_log_bytes: u64,
+) -> JoinHandle<()> {
     thread::spawn(move || {
-        let monitor = ResourceMonitor::new(history_store, db_path, metrics, shutdown_rx);
+        let mut monitor = ResourceMonitor::new(history_store, db_path, metrics, shutdown_rx);
+        monitor.max_log_bytes = max_log_bytes;
         if let Err(e) = monitor.run() {
             tracing::error!(
                 component = "ResourceMonitor",
@@ -656,5 +710,72 @@ mod tests {
         assert!(total > 0, "Total memory should be non-zero");
         assert!(available > 0, "Available memory should be non-zero");
         assert!(available <= total, "Available should not exceed total");
+    }
+
+    #[test]
+    fn test_rotate_metrics_log_under_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = create_test_store(temp_dir.path());
+        let db_path = temp_dir.path().join("test.db");
+        let shared_store = Arc::new(Mutex::new(store));
+        let metrics = new_shared_metrics();
+        let (_tx, rx) = mpsc::channel();
+
+        let mut monitor = ResourceMonitor::new(shared_store, db_path, metrics, rx);
+        monitor.max_log_bytes = 1024; // 1 KB limit
+
+        let log_path = temp_dir.path().join("metrics.log");
+        // Write a small file (under limit)
+        std::fs::write(&log_path, "line1\nline2\nline3\n").unwrap();
+
+        monitor.rotate_metrics_log(&log_path);
+
+        // File should be unchanged
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(content, "line1\nline2\nline3\n");
+    }
+
+    #[test]
+    fn test_rotate_metrics_log_over_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = create_test_store(temp_dir.path());
+        let db_path = temp_dir.path().join("test.db");
+        let shared_store = Arc::new(Mutex::new(store));
+        let metrics = new_shared_metrics();
+        let (_tx, rx) = mpsc::channel();
+
+        let mut monitor = ResourceMonitor::new(shared_store, db_path, metrics, rx);
+        monitor.max_log_bytes = 50; // tiny limit to trigger rotation
+
+        let log_path = temp_dir.path().join("metrics.log");
+        // Write 10 lines, each ~12 bytes → ~120 bytes total, well over 50
+        let lines: String = (0..10).map(|i| format!("line-{:04}\n", i)).collect();
+        std::fs::write(&log_path, &lines).unwrap();
+
+        monitor.rotate_metrics_log(&log_path);
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        let remaining: Vec<&str> = content.lines().collect();
+        // Should keep the most recent half (5 lines)
+        assert_eq!(remaining.len(), 5);
+        assert_eq!(remaining[0], "line-0005");
+        assert_eq!(remaining[4], "line-0009");
+    }
+
+    #[test]
+    fn test_rotate_metrics_log_nonexistent_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = create_test_store(temp_dir.path());
+        let db_path = temp_dir.path().join("test.db");
+        let shared_store = Arc::new(Mutex::new(store));
+        let metrics = new_shared_metrics();
+        let (_tx, rx) = mpsc::channel();
+
+        let monitor = ResourceMonitor::new(shared_store, db_path, metrics, rx);
+        let log_path = temp_dir.path().join("nonexistent_metrics.log");
+
+        // Should not panic
+        monitor.rotate_metrics_log(&log_path);
+        assert!(!log_path.exists());
     }
 }

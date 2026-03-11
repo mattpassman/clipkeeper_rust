@@ -201,11 +201,13 @@ impl Application {
             let metrics = Arc::clone(&self.shared_metrics);
 
             tracing::info!(component = "Application", "Starting ResourceMonitor");
-            let resource_handle = resource_monitor::spawn_resource_monitor(
+            let max_log_bytes = self.config.monitoring.max_metrics_log_kb * 1024;
+            let resource_handle = resource_monitor::spawn_resource_monitor_with_max_log(
                 resource_store,
                 db_path,
                 metrics,
                 resource_shutdown_rx,
+                max_log_bytes,
             );
             self.resource_shutdown_tx = Some(resource_shutdown_tx);
             self.resource_handle = Some(resource_handle);
@@ -257,11 +259,13 @@ impl Application {
                 let metrics = Arc::clone(&self.shared_metrics);
 
                 tracing::info!(component = "Application", "Enabling ResourceMonitor via signal");
-                let resource_handle = resource_monitor::spawn_resource_monitor(
+                let max_log_bytes = self.config.monitoring.max_metrics_log_kb * 1024;
+                let resource_handle = resource_monitor::spawn_resource_monitor_with_max_log(
                     resource_store,
                     db_path,
                     metrics,
                     resource_shutdown_rx,
+                    max_log_bytes,
                 );
                 self.resource_shutdown_tx = Some(resource_shutdown_tx);
                 self.resource_handle = Some(resource_handle);

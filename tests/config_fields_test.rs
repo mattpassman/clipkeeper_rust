@@ -11,7 +11,7 @@ fn test_privacy_custom_patterns_field() {
             custom_patterns: vec!["pattern1".to_string(), "pattern2".to_string()],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true },
+        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true, max_metrics_log_kb: 1024 },
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/test"),
             db_path: None,
@@ -35,7 +35,7 @@ fn test_storage_db_path_optional_with_default() {
             custom_patterns: vec![],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true },
+        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true, max_metrics_log_kb: 1024 },
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/test"),
             db_path: None,
@@ -60,7 +60,7 @@ fn test_storage_db_path_optional_with_custom() {
             custom_patterns: vec![],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true },
+        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true, max_metrics_log_kb: 1024 },
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/test"),
             db_path: Some(custom_path.clone()),
@@ -84,7 +84,7 @@ fn test_search_default_limit_field() {
             custom_patterns: vec![],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true },
+        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true, max_metrics_log_kb: 1024 },
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/test"),
             db_path: None,
@@ -161,7 +161,7 @@ fn test_config_serialization_with_new_fields() {
             custom_patterns: vec!["custom1".to_string()],
         },
         retention: RetentionConfig { days: 30 },
-        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true },
+        monitoring: MonitoringConfig { poll_interval: 500, auto_start: false, enabled: true, max_metrics_log_kb: 1024 },
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/test"),
             db_path: Some(PathBuf::from("/custom/db.db")),

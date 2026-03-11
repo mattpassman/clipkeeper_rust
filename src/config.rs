@@ -35,6 +35,13 @@ pub struct MonitoringConfig {
     pub auto_start: bool,
     #[serde(default = "default_monitoring_enabled")]
     pub enabled: bool,
+    /// Maximum metrics.log file size in KB before rotation (default 1024 = 1 MB).
+    #[serde(default = "default_max_metrics_log_kb")]
+    pub max_metrics_log_kb: u64,
+}
+
+fn default_max_metrics_log_kb() -> u64 {
+    1024
 }
 
 fn default_monitoring_enabled() -> bool {
@@ -560,6 +567,7 @@ impl Default for Config {
                 poll_interval: 500,
                 auto_start: false,
                 enabled: true,
+                max_metrics_log_kb: 1024,
             },
             storage: StorageConfig {
                 data_dir,

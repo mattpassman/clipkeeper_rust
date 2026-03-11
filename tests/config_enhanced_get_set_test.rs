@@ -14,6 +14,7 @@ fn make_test_config() -> Config {
             poll_interval: 500,
             auto_start: true,
             enabled: false,
+            max_metrics_log_kb: 1024,
         },
         storage: StorageConfig {
             data_dir: PathBuf::from("/tmp/data"),
